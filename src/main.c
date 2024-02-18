@@ -67,11 +67,6 @@ main(int argc, char *argv[])
 
 //	td = tape_device_open(dev_name, false);
 //
-//	if (ioctl(td.fd, MTIOCGET, &mt_status) < 0)
-//		err(EXIT_FAILURE, "Failed to read device status");
-//
-//	printf("mt_dsreg: 0x%lx, mt_gstat: 0x%lx\n", mt_status.mt_dsreg, mt_status.mt_gstat);
-
 	// should include some callback instead of blocking
 	tape_poll_for_readiness(dev_name);
 
@@ -82,9 +77,10 @@ main(int argc, char *argv[])
 	tape_rewind(&td);
 	tape_status_dump(&td);
 
-//	tr = tape_reader_start(&td, tape_read_file_to_buffer);
-	tr = tape_reader_start(&td, tape_read_file_head_to_buffer);
-	printf("buf usage: %zd \n", tr->b.used);
+	tr = tape_reader_start(&td, tape_read_file_to_buffer);
+	sleep(2);
+	buffer_state_dump(&(tr->b));
+//	tr = tape_reader_start(&td, tape_read_file_head_to_buffer);
 /*	tape_read_block_to_buffer(&td, &b);
 	tape_read_block_to_buffer(&td, &b);
 	tape_read_block_to_buffer(&td, &b);*/
@@ -92,12 +88,18 @@ main(int argc, char *argv[])
 //	sleep(20);
 //	printf("buf usage: %zd \n", tr->b.used);
 
-	tape_reader_wait();
-	printf("buf usage: %zd \n", tr->b.used);
-
+//	tape_reader_wait();
+	buffer_prefill_wait(&(tr->b), 10000);
 	flac_test(&(tr->b));
+	sleep(5);
+	buffer_state_dump(&(tr->b));
+	sleep(5);
+	buffer_state_dump(&(tr->b));
 
-	tape_block_tell(&td);
+
+	tape_reader_wait();
+//	tape_block_tell(&td);
+//	tape_reader_wait();
 
 	tape_device_close(&td);
 

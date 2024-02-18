@@ -14,6 +14,9 @@ struct buffer {
 
 struct buffer buffer_init(size_t size);
 void buffer_realloc(struct buffer *b);
+void buffer_prefill_wait(struct buffer *b, size_t want);
+void buffer_state_dump(struct buffer *b);
+
 
 
 #define BUFFER_SIZE_DEFAULT 10*1024*1024

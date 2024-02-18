@@ -98,8 +98,10 @@ tape_read_block_to_buffer(struct tape_device *td, struct buffer *b)
 	b->used += rb;
 	(b->blocks)++;
 
-	if (rb < 0)
+	if (rb < 0) {
+		buffer_state_dump(b);
 		perror("Error reading block from tape");
+	}
 
 	/* if no space in buffer, realloc buffer */
 

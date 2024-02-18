@@ -40,8 +40,29 @@ buffer_realloc(struct buffer *b)
 
 	new_size = b->size + BUFFER_SIZE_DEFAULT;
 
-	fprintf(stderr, "Buffer: reallocation (current size: %lx, new size: %lx, used: %lx, blocks: %lx\n", b->size, new_size, b->used, b->blocks);
+	fprintf(stderr, "buffer: reallocation (current size: %zu, new size: %zu, used: %zu, blocks: %zu)\n", b->size, new_size, b->used, b->blocks);
 
 	b->data = GC_realloc(b->data, new_size);
 	b->size = new_size;
+}
+
+void
+buffer_prefill_wait(struct buffer *b, size_t want)
+{
+	/* use a mutex here? */
+	while(b->used < want)
+		sleep(1);
+
+	fprintf(stderr, "buffer: prefill condition met (used: %zu want: %zu)\n", b->used, want);
+}
+
+void
+buffer_state_dump(struct buffer *b)
+{
+	fprintf(stderr, "buffer: size %zu, used %zu, blocks %zu, ptr %p",
+	    b->size, b->used, b->blocks, b->data);
+	if(b->rptr != NULL)
+		fprintf(stderr, " rpos %zu, rptr %p", b->rpos, b->rptr);
+
+	fprintf(stderr, "\n");
 }
