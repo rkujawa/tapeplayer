@@ -1,5 +1,5 @@
 CFLAGS=-Wall -pedantic -g -O0 -DGC_THREADS -DGC_PTHREADS
-LDFLAGS=-pthread -lgc -lFLAC
+LDFLAGS=-pthread -lgc -lFLAC -lao
 
 all : tapeplayer
 

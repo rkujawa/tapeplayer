@@ -4,9 +4,14 @@
 #include <string.h>
 
 #include <sys/errno.h>
+#include <unistd.h>
 
 #include <FLAC/stream_decoder.h>
 #include <FLAC/metadata.h>
+
+#include <ao/ao.h>
+
+#include <gc/gc.h>
 
 #include "buffer.h"
 
@@ -23,14 +28,18 @@ static FLAC__IOCallbacks io_meta_cb = {
 	.close = NULL
 };
 
+ao_device *ao_dev;
+ao_sample_format ao_fmt;  /* temporarily... */
+
 static size_t 
 flac_io_read(void *ptr, size_t size, size_t nmemb, FLAC__IOHandle handle)
 {
-	fprintf(stderr, "flac_io: read %zu * %zu to %p\n", size, nmemb, ptr);
 	ssize_t read_size;
 	struct buffer *b;
 
 	b = (struct buffer *) handle;
+
+	fprintf(stderr, "flac_io: read %zu * %zu from %p (pos %zu) to %p\n", size, nmemb, b->rptr, b->rpos, ptr);
 
 	// handle going out of the buffer and end of data
 	read_size = size * nmemb;
@@ -107,8 +116,9 @@ flac_io_decoder_read(const FLAC__StreamDecoder *decoder, FLAC__byte flacbuf[], s
 
 	if (*bytes > 0) {
 		*bytes = flac_io_read(flacbuf, sizeof(FLAC__byte), *bytes, b);
-		// if error... return STATUS_ABORT
-		if (*bytes == 0)
+		if (*bytes == -1) 
+			return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
+		else if (*bytes == 0)
 			return FLAC__STREAM_DECODER_READ_STATUS_END_OF_STREAM;
 		else
 			return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE;
@@ -186,9 +196,42 @@ static FLAC__StreamDecoderWriteStatus
 flac_io_decoder_write(const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame, 
     const FLAC__int32 *const buffer[], void *client_data)
 {
-	fprintf(stderr, "flac_io: decoded a frame, great success!\n");
+	FLAC__FrameHeader h;
+	size_t playback_size;
 
-	// do things 
+	int sample, channel, i;
+
+	uint8_t *playback_buf, *playback_buf_u8;
+	int16_t *playback_buf_s16;
+	int32_t *playback_buf_s32;
+
+	uint32_t num_samples = frame->header.blocksize;
+
+	h = frame->header;
+	playback_size = frame->header.blocksize * frame->header.channels * ao_fmt.bits / 8;
+
+	playback_buf = GC_malloc(playback_size);
+	playback_buf_u8 = (uint8_t*) playback_buf;
+	playback_buf_s16 = (int16_t*) playback_buf;
+	playback_buf_s32 = (int32_t*) playback_buf;
+
+	assert(ao_fmt.bits == 24) ;
+	{ /* stolen from flac123 */
+		for (sample = i = 0; sample < num_samples; sample++) {
+			for(channel = 0; channel < frame->header.channels; channel++,i+=3) {
+				int32_t scaled_sample = (int32_t) (buffer[channel][sample] * ((float)1));
+
+				playback_buf_u8[i]   = (scaled_sample >>  0) & 0xFF;
+				playback_buf_u8[i+1] = (scaled_sample >>  8) & 0xFF;
+				playback_buf_u8[i+2] = (scaled_sample >> 16) & 0xFF;
+			}
+		}
+        }
+
+	ao_play(ao_dev, (char *)playback_buf, playback_size);
+	fprintf(stderr, "flac_io: decoded frame (blocksize %u, samplerate %u, channels %u, %u bits, playback buf size %zu)\n", h.blocksize, h.sample_rate, h.channels, h.bits_per_sample, playback_size);
+
+
 
 	return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
@@ -200,8 +243,15 @@ flac_io_decoder_metadata(const FLAC__StreamDecoder *decoder, const FLAC__StreamM
 {
     //FLAC_music *data = (FLAC_music *)client_data;
 
-    if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO)
-	    fprintf(stderr, "flac_io: some STREAMINFO decoded\n");
+	if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO) {
+		ao_fmt.bits = metadata->data.stream_info.bits_per_sample;
+		ao_fmt.rate = metadata->data.stream_info.sample_rate;
+		ao_fmt.channels = metadata->data.stream_info.channels;
+		ao_fmt.byte_format = AO_FMT_NATIVE;
+		fprintf(stderr, "flac_io: some STREAMINFO decoded %d bits, %d channels, %d rate\n",
+		    ao_fmt.bits, ao_fmt.channels, ao_fmt.rate);
+	}
+
 /*
         data->flac_data.sample_rate = metadata->data.stream_info.sample_rate;
         data->flac_data.channels = metadata->data.stream_info.channels;
@@ -299,11 +349,13 @@ flac_test(struct buffer *b)
 	FLAC__StreamDecoder* f;
 	FLAC__StreamDecoderState state;
 
-	uint8_t i;
-	uint8_t frames_to_decode;
+	uint32_t i;
+	uint32_t frames_to_decode;
+
+	static int ao_output_id; // XXX
 
 	i = 0;
-	frames_to_decode = 10; // XXX
+	frames_to_decode = 10000; // XXX
 
 	b->rpos = 0;
 	b->rptr = b->data;
@@ -315,6 +367,10 @@ flac_test(struct buffer *b)
 	    flac_io_decoder_write, flac_io_decoder_metadata, flac_io_error, b);
 
 	FLAC__stream_decoder_process_until_end_of_metadata(f);
+
+	ao_output_id = ao_default_driver_id();
+	ao_dev = ao_open_live(ao_output_id, &ao_fmt, NULL);
+	assert(ao_dev);
 
 	while (i < frames_to_decode) {
 
@@ -328,5 +384,6 @@ flac_test(struct buffer *b)
 		i++;
 	}
 
+	ao_close(ao_dev);
 	fprintf(stderr, "flac: returning from flac_test\n");
 }

@@ -14,6 +14,8 @@
 #include <gc/gc.h>
 #include <utlist.h>
 
+#include <ao/ao.h>
+
 #include "buffer.h"
 #include "tapeio.h"
 #include "flac.h"
@@ -61,6 +63,8 @@ main(int argc, char *argv[])
 	argv += optind;
 	argc -= optind;
 
+	ao_initialize();
+
 /*	if (f_verbose)
 		uscsilib_verbose = 1;*/
 //	b = buffer_init(BUFFER_SIZE_DEFAULT);
@@ -89,7 +93,8 @@ main(int argc, char *argv[])
 //	printf("buf usage: %zd \n", tr->b.used);
 
 //	tape_reader_wait();
-	buffer_prefill_wait(&(tr->b), 10000);
+//	buffer_prefill_wait(&(tr->b), 10000);
+	buffer_prefill_wait(&(tr->b), 5*1024*1024);
 	flac_test(&(tr->b));
 	sleep(5);
 	buffer_state_dump(&(tr->b));
