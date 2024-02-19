@@ -130,19 +130,16 @@ static FLAC__StreamDecoderSeekStatus
 flac_io_decoder_seek(const FLAC__StreamDecoder *decoder, FLAC__uint64 abs_byte_offset, 
     void *client_data)
 {
-//	struct buffer *b;
-//
-//	b = (struct buffer *) client_data;
-	
-	// temporarily
-	return FLAC__STREAM_DECODER_SEEK_STATUS_UNSUPPORTED;
+	struct buffer *b;
 
-//  if(file == stdin)
-//    return FLAC__STREAM_DECODER_SEEK_STATUS_UNSUPPORTED;
-//  else if(fseeko(file, (off_t)absolute_byte_offset, SEEK_SET) < 0)
-//    return FLAC__STREAM_DECODER_SEEK_STATUS_ERROR;
-//  else
-//    return FLAC__STREAM_DECODER_SEEK_STATUS_OK;
+	b = (struct buffer *) client_data;
+	
+	//return FLAC__STREAM_DECODER_SEEK_STATUS_UNSUPPORTED;
+
+	if (flac_io_seek(b, abs_byte_offset, SEEK_SET) < 0)
+		return FLAC__STREAM_DECODER_SEEK_STATUS_ERROR;
+	else
+		return FLAC__STREAM_DECODER_SEEK_STATUS_OK;
 }
 
 static FLAC__bool
@@ -163,8 +160,8 @@ flac_io_decoder_tell(const FLAC__StreamDecoder *decoder, FLAC__uint64 *abs_byte_
 
 	pos = flac_io_tell(b);
 
-//  if(file == stdin)
-//    return FLAC__STREAM_DECODER_TELL_STATUS_UNSUPPORTED;
+//	return FLAC__STREAM_DECODER_TELL_STATUS_UNSUPPORTED;
+
 	if(pos < 0)
 		return FLAC__STREAM_DECODER_TELL_STATUS_ERROR;
 	else 
@@ -218,7 +215,7 @@ flac_io_decoder_write(const FLAC__StreamDecoder *decoder, const FLAC__Frame *fra
 	assert(ao_fmt.bits == 24) ;
 	{ /* stolen from flac123 */
 		for (sample = i = 0; sample < num_samples; sample++) {
-			for(channel = 0; channel < frame->header.channels; channel++,i+=3) {
+			for (channel = 0; channel < frame->header.channels; channel++,i+=3) {
 				int32_t scaled_sample = (int32_t) (buffer[channel][sample] * ((float)1));
 
 				playback_buf_u8[i]   = (scaled_sample >>  0) & 0xFF;
