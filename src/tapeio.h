@@ -27,6 +27,8 @@ struct tape_reader {
 	struct buffer b;
 
 	tape_state ts;
+
+	struct timeval start;
 };
 
 struct tape_device tape_device_open(const char *dev_name, bool blocking);
@@ -41,6 +43,8 @@ void *tape_read_file_head_to_buffer(void *arg);
 struct tape_reader * tape_reader_start(struct tape_device *td, void *(*reader_thread_func)(void *));
 void tape_reader_wait();
 void tape_status_dump(struct tape_device *td);
+uint64_t tape_bandwidth_get();
+
 
 void tape_rewind(struct tape_device *td);
 

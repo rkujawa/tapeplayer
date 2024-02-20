@@ -14,6 +14,7 @@
 
 #include <sys/ioctl.h>
 #include <sys/mtio.h>
+#include <sys/time.h>
 
 #include <gc/gc.h>
 #include <utlist.h>
@@ -120,6 +121,8 @@ tape_read_thread_init()
 	pthread_setname_np(tr.thread, "tape_reader");
 #endif
 	tr.ts = READING;
+
+	gettimeofday(&tr.start, NULL);	
 	// run some callback to update UI that we are starting to read
 }
 
@@ -182,6 +185,29 @@ tape_read_file_head_to_buffer(void *arg)
 	
 	return NULL;
 } 
+
+uint64_t
+tape_bandwidth_get()
+{
+	struct timeval now;
+	int64_t mS;
+	uint64_t bandwidth;
+
+	if ((tr.ts == STOPPED) || (tr.ts == OFFLINE))
+		return 0;
+
+	gettimeofday(&now, NULL);
+
+#define	tv2mS(tv) ((tv).tv_sec * 1000LL + ((tv).tv_usec + 500) / 1000)
+	mS = tv2mS(now) - tv2mS(tr.start);
+	if (mS == 0)
+		mS = 1;
+
+	bandwidth = (tr.b.used * 1000LL / mS);
+	fprintf(stderr, "bandwidth %lu/s\n", bandwidth);
+
+	return bandwidth;
+}
 
 void
 tape_reader_wait(void)
@@ -280,7 +306,6 @@ tape_status_dump(struct tape_device *td)
         fprintf(stderr, "tapeio: mt_dsreg: 0x%lx, mt_gstat: 0x%lx\n", mt_status.mt_dsreg, mt_status.mt_gstat);
 
 }
-
 
 size_t 
 tape_block_tell(struct tape_device *td)

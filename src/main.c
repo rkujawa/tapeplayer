@@ -94,13 +94,11 @@ main(int argc, char *argv[])
 
 //	tape_reader_wait();
 //	buffer_prefill_wait(&(tr->b), 10000);
-	buffer_prefill_wait(&(tr->b), 5*1024*1024);
-	flac_test(&(tr->b));
+	buffer_prefill_wait(&(tr->b), 20*1024*1024);
 	sleep(5);
 	buffer_state_dump(&(tr->b));
-	sleep(5);
-	buffer_state_dump(&(tr->b));
-
+	tape_bandwidth_get();
+	flac_test(&(tr->b)); // blocking! needs to run in a thread
 
 	tape_reader_wait();
 //	tape_block_tell(&td);

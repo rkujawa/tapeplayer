@@ -39,7 +39,7 @@ flac_io_read(void *ptr, size_t size, size_t nmemb, FLAC__IOHandle handle)
 
 	b = (struct buffer *) handle;
 
-	fprintf(stderr, "flac_io: read %zu * %zu from %p (pos %zu) to %p\n", size, nmemb, b->rptr, b->rpos, ptr);
+	//fprintf(stderr, "flac_io: read %zu * %zu from %p (pos %zu) to %p\n", size, nmemb, b->rptr, b->rpos, ptr);
 
 	// handle going out of the buffer and end of data
 	read_size = size * nmemb;
@@ -101,7 +101,7 @@ flac_io_tell(FLAC__IOHandle handle)
 
 	b = (struct buffer *) handle;
 
-	fprintf(stderr, "flac_io: telling rpos %zu rptr %p\n", b->rpos, b->rptr);
+	//fprintf(stderr, "flac_io: telling rpos %zu rptr %p\n", b->rpos, b->rptr);
 
 	return b->rpos;
 }
@@ -226,7 +226,7 @@ flac_io_decoder_write(const FLAC__StreamDecoder *decoder, const FLAC__Frame *fra
         }
 
 	ao_play(ao_dev, (char *)playback_buf, playback_size);
-	fprintf(stderr, "flac_io: decoded frame (blocksize %u, samplerate %u, channels %u, %u bits, playback buf size %zu)\n", h.blocksize, h.sample_rate, h.channels, h.bits_per_sample, playback_size);
+	//fprintf(stderr, "flac_io: decoded frame (blocksize %u, samplerate %u, channels %u, %u bits, playback buf size %zu)\n", h.blocksize, h.sample_rate, h.channels, h.bits_per_sample, playback_size);
 
 
 
@@ -352,7 +352,7 @@ flac_test(struct buffer *b)
 	static int ao_output_id; // XXX
 
 	i = 0;
-	frames_to_decode = 10000; // XXX
+	frames_to_decode = 5000; // XXX
 
 	b->rpos = 0;
 	b->rptr = b->data;
@@ -375,8 +375,9 @@ flac_test(struct buffer *b)
 			fprintf(stderr, "flac: failed decoding, returning\n");
 			return;
 		} else {
-			state = FLAC__stream_decoder_get_state(f);
-			fprintf(stderr, "flac: decoder state %d\n", state);
+			//state = FLAC__stream_decoder_get_state(f);
+			//fprintf(stderr, "flac: decoder state %d\n", state);
+			;;
 		}
 		i++;
 	}
