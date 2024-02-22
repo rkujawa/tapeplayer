@@ -14,6 +14,7 @@
 #include <gc/gc.h>
 
 #include "buffer.h"
+#include "audioio.h"
 
 static size_t flac_io_read(void *ptr, size_t size, size_t nmemb, FLAC__IOHandle handle);
 static int flac_io_seek(FLAC__IOHandle handle, FLAC__int64 offset, int whence);
@@ -28,8 +29,19 @@ static FLAC__IOCallbacks io_meta_cb = {
 	.close = NULL
 };
 
-ao_device *ao_dev;
-ao_sample_format ao_fmt;  /* temporarily... */
+//ao_device *ao_dev;
+//ao_sample_format ao_fmt;  /* temporarily... */
+
+static void
+flac_metadata_vorbis_comment_dump(const FLAC__StreamMetadata *metablock)
+{
+	FLAC__uint32 i;
+
+	for (i = 0; i < metablock->data.vorbis_comment.num_comments; i++) {
+		fprintf(stderr, "flac: vorbis_comment %s\n", (char *) 
+		    metablock->data.vorbis_comment.comments[i].entry);
+	}
+}
 
 static size_t 
 flac_io_read(void *ptr, size_t size, size_t nmemb, FLAC__IOHandle handle)
@@ -193,44 +205,12 @@ static FLAC__StreamDecoderWriteStatus
 flac_io_decoder_write(const FLAC__StreamDecoder *decoder, const FLAC__Frame *frame, 
     const FLAC__int32 *const buffer[], void *client_data)
 {
-	FLAC__FrameHeader h;
-	size_t playback_size;
-
-	int sample, channel, i;
-
-	uint8_t *playback_buf, *playback_buf_u8;
-	int16_t *playback_buf_s16;
-	int32_t *playback_buf_s32;
-
-	uint32_t num_samples = frame->header.blocksize;
-
-	h = frame->header;
-	playback_size = frame->header.blocksize * frame->header.channels * ao_fmt.bits / 8;
-
-	playback_buf = GC_malloc(playback_size);
-	playback_buf_u8 = (uint8_t*) playback_buf;
-	playback_buf_s16 = (int16_t*) playback_buf;
-	playback_buf_s32 = (int32_t*) playback_buf;
-
-	assert(ao_fmt.bits == 24) ;
-	{ /* stolen from flac123 */
-		for (sample = i = 0; sample < num_samples; sample++) {
-			for (channel = 0; channel < frame->header.channels; channel++,i+=3) {
-				int32_t scaled_sample = (int32_t) (buffer[channel][sample] * ((float)1));
-
-				playback_buf_u8[i]   = (scaled_sample >>  0) & 0xFF;
-				playback_buf_u8[i+1] = (scaled_sample >>  8) & 0xFF;
-				playback_buf_u8[i+2] = (scaled_sample >> 16) & 0xFF;
-			}
-		}
-        }
-
-	ao_play(ao_dev, (char *)playback_buf, playback_size);
-	//fprintf(stderr, "flac_io: decoded frame (blocksize %u, samplerate %u, channels %u, %u bits, playback buf size %zu)\n", h.blocksize, h.sample_rate, h.channels, h.bits_per_sample, playback_size);
-
-
+	//if
+	audio_playback(buffer, frame->header.blocksize);
 
 	return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+	// else abort
+
 }
 
 
@@ -241,21 +221,21 @@ flac_io_decoder_metadata(const FLAC__StreamDecoder *decoder, const FLAC__StreamM
     //FLAC_music *data = (FLAC_music *)client_data;
 
 	if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO) {
-		ao_fmt.bits = metadata->data.stream_info.bits_per_sample;
-		ao_fmt.rate = metadata->data.stream_info.sample_rate;
-		ao_fmt.channels = metadata->data.stream_info.channels;
-		ao_fmt.byte_format = AO_FMT_NATIVE;
-		fprintf(stderr, "flac_io: some STREAMINFO decoded %d bits, %d channels, %d rate\n",
-		    ao_fmt.bits, ao_fmt.channels, ao_fmt.rate);
+		audio_format_set(metadata->data.stream_info.bits_per_sample,
+		    metadata->data.stream_info.sample_rate, 
+		    metadata->data.stream_info.channels);
+		// update ui with song info
+	}
+
+	if (metadata->type == FLAC__METADATA_TYPE_VORBIS_COMMENT) {
+		flac_metadata_vorbis_comment_dump(metadata);
+		fprintf(stderr, "flac_io: VORBIS_COMMENT\n");
+		// update ui with song info
 	}
 
 /*
-        data->flac_data.sample_rate = metadata->data.stream_info.sample_rate;
-        data->flac_data.channels = metadata->data.stream_info.channels;
         data->flac_data.total_samples =
                             metadata->data.stream_info.total_samples;
-        data->flac_data.bits_per_sample =
-                            metadata->data.stream_info.bits_per_sample;
         data->flac_data.sample_size = data->flac_data.channels *
                                         ((data->flac_data.bits_per_sample) / 8);*/
 }
@@ -285,16 +265,6 @@ flac_io_error(const FLAC__StreamDecoder *decoder, FLAC__StreamDecoderErrorStatus
     }*/
 }
 
-void
-flac_metadata_vorbis_comment_dump(FLAC__StreamMetadata *metablock)
-{
-	FLAC__uint32 i;
-
-	for (i = 0; i < metablock->data.vorbis_comment.num_comments; i++) {
-		fprintf(stderr, "flac: vorbis_comment %s\n", (char *) 
-		    metablock->data.vorbis_comment.comments[i].entry);
-	}
-}
 
 void 
 flac_meta_test(struct buffer *b)
@@ -349,8 +319,6 @@ flac_test(struct buffer *b)
 	uint32_t i;
 	uint32_t frames_to_decode;
 
-	static int ao_output_id; // XXX
-
 	i = 0;
 	frames_to_decode = 5000; // XXX
 
@@ -359,15 +327,16 @@ flac_test(struct buffer *b)
 	
 	f = FLAC__stream_decoder_new();
 
+assert(FLAC__stream_decoder_set_metadata_respond(f, FLAC__METADATA_TYPE_VORBIS_COMMENT));
+
 	FLAC__stream_decoder_init_stream(f, flac_io_decoder_read, flac_io_decoder_seek,
 	    flac_io_decoder_tell, flac_io_decoder_length, flac_io_decoder_eof,
 	    flac_io_decoder_write, flac_io_decoder_metadata, flac_io_error, b);
 
+
 	FLAC__stream_decoder_process_until_end_of_metadata(f);
 
-	ao_output_id = ao_default_driver_id();
-	ao_dev = ao_open_live(ao_output_id, &ao_fmt, NULL);
-	assert(ao_dev);
+	audio_open();
 
 	while (i < frames_to_decode) {
 
@@ -382,6 +351,7 @@ flac_test(struct buffer *b)
 		i++;
 	}
 
-	ao_close(ao_dev);
+	audio_close();
+
 	fprintf(stderr, "flac: returning from flac_test\n");
 }
