@@ -31,6 +31,7 @@ func main() {
 	target := flag.String("target", "", "target IQN")
 	lun := flag.Uint64("lun", 0, "LUN number")
 	initiatorName := flag.String("initiator-name", "", "initiator IQN (optional)")
+	bs := flag.Uint("bs", 0, "fixed block size in bytes (0 = variable block mode)")
 	debugFile := flag.String("debug", "", "debug log file (empty = no debug logging)")
 	flag.Parse()
 
@@ -73,7 +74,11 @@ func main() {
 	// Open tape drive.
 	var tapeOpts []tape.Option
 	tapeOpts = append(tapeOpts, tape.WithLogger(logger))
-	tapeOpts = append(tapeOpts, tape.WithSILI(true)) // suppress ILI for variable-block reads
+	if *bs > 0 {
+		tapeOpts = append(tapeOpts, tape.WithBlockSize(uint32(*bs)))
+	} else {
+		tapeOpts = append(tapeOpts, tape.WithSILI(true)) // suppress ILI for variable-block reads
+	}
 
 	drive, err := tape.Open(ctx, sess, *lun, tapeOpts...)
 	if err != nil {
