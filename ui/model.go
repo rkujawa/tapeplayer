@@ -77,6 +77,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case player.EOTMsg:
+		m.player.Stop()
 		m.state = player.Stopped
 		m.lastErr = "End of tape"
 		return m, nil

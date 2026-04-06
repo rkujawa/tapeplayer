@@ -191,10 +191,19 @@ func (p *Player) RewindTape(ctx context.Context) {
 	}
 }
 
-// Close releases audio resources.
+// Close releases audio resources. Safe to call from the bubbletea
+// Update loop — does not send messages via prog.Send.
 func (p *Player) Close() {
-	p.Stop()
+	p.mu.Lock()
+	if p.cancel != nil {
+		p.cancel()
+		p.cancel = nil
+	}
+	p.state = Stopped
+	p.mu.Unlock()
+
 	if p.audioDev != nil {
+		p.audioDev.stop()
 		p.audioDev.close()
 		p.audioDev = nil
 	}
