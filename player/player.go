@@ -64,14 +64,12 @@ func (p *Player) setState(s State) {
 	p.mu.Lock()
 	p.state = s
 	p.mu.Unlock()
-	if p.prog != nil {
-		p.prog.Send(StateChangedMsg{State: s})
-	}
+	p.sendMsg(StateChangedMsg{State: s})
 }
 
 func (p *Player) sendMsg(msg tea.Msg) {
 	if p.prog != nil {
-		p.prog.Send(msg)
+		go p.prog.Send(msg)
 	}
 }
 
@@ -80,6 +78,8 @@ func (p *Player) Play(ctx context.Context) {
 	p.mu.Lock()
 	state := p.state
 	p.mu.Unlock()
+
+	p.logger.Debug("player: Play called", "state", state)
 
 	switch state {
 	case Stopped:
@@ -110,6 +110,8 @@ func (p *Player) TogglePlayPause(ctx context.Context) {
 	p.mu.Lock()
 	state := p.state
 	p.mu.Unlock()
+
+	p.logger.Debug("player: TogglePlayPause called", "state", state)
 
 	switch state {
 	case Playing:
@@ -217,6 +219,7 @@ func (p *Player) resume() {
 }
 
 func (p *Player) startTrack(ctx context.Context) {
+	p.logger.Debug("player: startTrack")
 	trackCtx, cancel := context.WithCancel(ctx)
 
 	p.mu.Lock()
