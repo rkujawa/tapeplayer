@@ -11,10 +11,7 @@ Built on [uiscsi](https://github.com/rkujawa/uiscsi) and [uiscsi-tape](https://g
 - **Streaming playback** -- starts playing before the full file is buffered from tape (critical for slower DDS drives)
 - **LRU data cache** -- caches discovered tracks in memory (500MB default) for instant replay; metadata preserved even after eviction
 - **FLAC metadata** -- displays artist, album, title, format from Vorbis comments
-- **Hardware decompression** -- optional `-decompress` for tapes written with drive-level compression
 - **Variable and fixed block modes** -- works with any tape block size via `-bs`
-- **Debug logging** -- structured JSON log to file for diagnostics
-- **Force quit** -- second Ctrl+C kills the process immediately (prevents unkillable processes from stuck audio drivers)
 
 ## Tape Format
 
@@ -27,7 +24,7 @@ Standard UNIX tape layout -- each FLAC file is written as a continuous stream of
 Write FLACs to tape with:
 ```sh
 for f in *.flac; do
-    dd if="$f" bs=524288 > /dev/nst0
+    dd if="$f" bs=524288 of=/dev/nst0
 done
 # Write double filemark (end of tape marker)
 mt -f /dev/nst0 weof 2
@@ -48,7 +45,7 @@ tapeplayer -portal 192.168.1.100:3260 -target iqn.example:tape -lun 2
 | `-lun` | 0 | LUN number |
 | `-initiator-name` | (auto) | Initiator IQN |
 | `-bs` | 0 | Fixed block size in bytes (0 = variable block) |
-| `-decompress` | false | Enable hardware decompression |
+| `-decompress` | false | Force enable hardware decompression |
 | `-debug` | (none) | Debug log file path |
 
 ### Controls
@@ -65,15 +62,15 @@ tapeplayer -portal 192.168.1.100:3260 -target iqn.example:tape -lun 2
 ## Architecture
 
 ```
-                         ┌──────────┐
-                         │ Playlist │ (LRU cache + metadata)
-                         └────┬─────┘
-                              │
+                          ┌──────────┐
+                          │ Playlist │ (LRU cache + metadata)
+                          └────┬─────┘
+                               │
 Tape Reader ──▶ streamBuffer ──┤──▶ FLAC Decoder ──▶ Ring Buffer ──▶ Audio Device
-(goroutine)    (blocking reader)│    (goroutine)     (cond-var)     (malgo callback)
-                              │
-                              ▼
-                        Bubbletea TUI
+(goroutine)   (blocking reader)│    (goroutine)     (cond-var)     (malgo callback)
+                               │
+                               ▼
+                          Bubbletea TUI
 ```
 
 ### Key components
