@@ -32,7 +32,7 @@ func main() {
 	lun := flag.Uint64("lun", 0, "LUN number")
 	initiatorName := flag.String("initiator-name", "", "initiator IQN (optional)")
 	bs := flag.Uint("bs", 0, "fixed block size in bytes (0 = variable block mode)")
-	decompress := flag.Bool("decompress", true, "enable hardware decompression for compressed tapes")
+	decompress := flag.Bool("decompress", false, "enable hardware decompression (for tapes written with drive compression)")
 	debugFile := flag.String("debug", "", "debug log file (empty = no debug logging)")
 	flag.Parse()
 
