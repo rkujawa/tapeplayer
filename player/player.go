@@ -23,6 +23,7 @@ type Player struct {
 	readBuf   int // tape read buffer size in bytes
 
 	mu        sync.Mutex
+	wg        sync.WaitGroup // tracks readFromTape and startDecoder goroutines
 	state     State
 	fileNum   int            // current file number on tape (1-based)
 	cancel    context.CancelFunc
@@ -130,7 +131,7 @@ func (p *Player) TogglePlayPause(ctx context.Context) {
 	}
 }
 
-// Stop stops playback and cleans up.
+// Stop stops playback and waits for background goroutines to exit.
 func (p *Player) Stop() {
 	p.mu.Lock()
 	if p.cancel != nil {
@@ -142,6 +143,7 @@ func (p *Player) Stop() {
 	if p.audioDev != nil {
 		p.audioDev.stop()
 	}
+	p.wg.Wait() // wait for readFromTape + startDecoder to exit
 	p.setState(Stopped)
 }
 
@@ -250,7 +252,11 @@ func (p *Player) startTrack(ctx context.Context) {
 	p.setState(Loading)
 
 	// Start tape reader goroutine.
-	go p.readFromTape(trackCtx, sb, fileNum)
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.readFromTape(trackCtx, sb, fileNum)
+	}()
 }
 
 func (p *Player) startTrackFromBuffer(ctx context.Context, data []byte) {
@@ -267,7 +273,11 @@ func (p *Player) startTrackFromBuffer(ctx context.Context, data []byte) {
 	p.mu.Unlock()
 
 	// Skip tape reading — go straight to decode in a goroutine.
-	go p.startDecoder(trackCtx, sb)
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.startDecoder(trackCtx, sb)
+	}()
 }
 
 func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int) {
@@ -344,7 +354,11 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 		}
 		p.mu.Unlock()
 		if needStart {
-			go p.startDecoder(ctx, sb)
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				p.startDecoder(ctx, sb)
+			}()
 		}
 	}
 }
@@ -381,7 +395,12 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 
 	p.audioDev.reset()
 	p.setState(Playing)
-	p.audioDev.start()
+	if err := p.audioDev.start(); err != nil {
+		p.logger.Error("audio: start failed", "err", err)
+		p.sendMsg(ErrorMsg{Err: fmt.Errorf("audio start: %w", err)})
+		p.setState(Stopped)
+		return
+	}
 
 	// Decode loop: decode FLAC frames → convert to PCM → write to ring buffer.
 	for {

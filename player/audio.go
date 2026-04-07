@@ -70,10 +70,8 @@ func newAudioDevice(sampleRate uint32, channels uint8, bitsPerSample uint8, logg
 }
 
 // start begins audio playback.
-func (ad *audioDevice) start() {
-	if err := ad.device.Start(); err != nil {
-		ad.logger.Error("audio: start failed", "err", err)
-	}
+func (ad *audioDevice) start() error {
+	return ad.device.Start()
 }
 
 // stop halts audio playback. Closes the ring buffer first to unblock

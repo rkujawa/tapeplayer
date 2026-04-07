@@ -2,17 +2,16 @@ package player
 
 import (
 	"io"
-	"runtime"
 	"sync"
 )
 
-// ringBuffer is a fixed-size lock-free-ish circular buffer for PCM audio
-// samples. The decoder goroutine writes decoded samples, and the malgo
-// audio callback reads them. Both sides coordinate via a mutex — the
-// callback must not block for long, so reads are non-blocking (return
-// silence on underrun).
+// ringBuffer is a fixed-size circular buffer for PCM audio samples.
+// The decoder goroutine writes decoded samples via Write, and the malgo
+// audio callback reads them via Read. Coordination uses a mutex +
+// condition variable instead of spin-waiting.
 type ringBuffer struct {
 	mu     sync.Mutex
+	cond   *sync.Cond
 	data   []byte
 	size   int
 	rpos   int  // read position
@@ -23,35 +22,34 @@ type ringBuffer struct {
 
 // newRingBuffer creates a ring buffer with the given capacity in bytes.
 func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{
+	rb := &ringBuffer{
 		data: make([]byte, size),
 		size: size,
 	}
+	rb.cond = sync.NewCond(&rb.mu)
+	return rb
 }
 
 // Write writes p into the ring buffer. If the buffer is full, it blocks
-// until space is available. Returns the number of bytes written.
+// on a condition variable until the audio callback drains some data.
+// Returns io.EOF if the buffer has been closed.
 // Called by the decoder goroutine.
 func (rb *ringBuffer) Write(p []byte) (int, error) {
 	written := 0
 	for written < len(p) {
 		rb.mu.Lock()
+		for rb.used == rb.size && !rb.closed {
+			rb.cond.Wait()
+		}
 		if rb.closed {
 			rb.mu.Unlock()
 			return written, io.EOF
 		}
 		avail := rb.size - rb.used
-		if avail == 0 {
-			rb.mu.Unlock()
-			// Yield — the audio callback will drain soon.
-			runtime.Gosched()
-			continue
-		}
 		n := len(p) - written
 		if n > avail {
 			n = avail
 		}
-		// Write up to end of buffer, then wrap.
 		end := rb.wpos + n
 		if end <= rb.size {
 			copy(rb.data[rb.wpos:end], p[written:written+n])
@@ -79,21 +77,25 @@ func (rb *ringBuffer) Read(p []byte) int {
 
 	n := len(p)
 	if n > rb.used {
-		// Underrun: fill what we have, zero the rest.
 		actual := rb.used
-		rb.readLocked(p[:actual])
-		// Zero-fill the remainder (silence).
+		if actual > 0 {
+			rb.readLocked(p[:actual])
+		}
 		for i := actual; i < n; i++ {
 			p[i] = 0
 		}
+		// Wake writer — space now available.
+		rb.cond.Signal()
 		return actual
 	}
 
 	rb.readLocked(p[:n])
+	// Wake writer — space now available.
+	rb.cond.Signal()
 	return n
 }
 
-// readLocked reads exactly n bytes from the ring, advancing rpos.
+// readLocked reads exactly len(p) bytes from the ring, advancing rpos.
 // Caller must hold rb.mu.
 func (rb *ringBuffer) readLocked(p []byte) {
 	n := len(p)
@@ -126,9 +128,10 @@ func (rb *ringBuffer) Reset() {
 	rb.closed = false
 }
 
-// Close signals writers to stop. Any blocked or future Write returns io.EOF.
+// Close signals writers to stop. Any blocked Write returns io.EOF.
 func (rb *ringBuffer) Close() {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.closed = true
+	rb.cond.Broadcast()
 }

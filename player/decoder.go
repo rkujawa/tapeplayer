@@ -49,6 +49,9 @@ func (d *flacDecoder) trackInfo() TrackInfo {
 		}
 		if vc, ok := block.Body.(*meta.VorbisComment); ok {
 			for _, tag := range vc.Tags {
+				if len(tag) < 2 {
+					continue
+				}
 				switch strings.ToUpper(tag[0]) {
 				case "ARTIST":
 					info.Artist = tag[1]
@@ -77,6 +80,9 @@ func (d *flacDecoder) nextFrame() ([]byte, error) {
 
 	nChannels := int(d.stream.Info.NChannels)
 	bps := int(d.stream.Info.BitsPerSample)
+	if len(frame.Subframes) < nChannels {
+		return nil, fmt.Errorf("FLAC frame has %d subframes, expected %d channels", len(frame.Subframes), nChannels)
+	}
 	nSamples := len(frame.Subframes[0].Samples)
 
 	d.samples += uint64(nSamples)

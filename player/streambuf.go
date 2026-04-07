@@ -84,11 +84,15 @@ func (sb *streamBuffer) Abort(err error) {
 	sb.cond.Broadcast()
 }
 
-// Bytes returns the full buffered contents. Only meaningful after
-// Complete has been called — used for track replay.
+// Bytes returns the full buffered contents for track replay.
+// Must only be called after [Complete] — panics otherwise to catch
+// misuse during development.
 func (sb *streamBuffer) Bytes() []byte {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
+	if !sb.complete {
+		panic("streamBuffer.Bytes() called before Complete()")
+	}
 	return sb.data
 }
 
