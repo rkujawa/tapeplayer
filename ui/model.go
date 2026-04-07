@@ -13,25 +13,29 @@ import (
 
 // Model is the bubbletea model for the tapeplayer TUI.
 type Model struct {
-	player     *player.Player
-	ctx        context.Context
-	state      player.State
-	track      player.TrackInfo
-	tape       player.TapeStatus
-	position   time.Duration
-	duration   time.Duration
-	lastErr    string
-	quitting   bool
-	driveInfo  string
+	player          *player.Player
+	ctx             context.Context
+	state           player.State
+	track           player.TrackInfo
+	tape            player.TapeStatus
+	position        time.Duration
+	duration        time.Duration
+	lastErr         string
+	quitting        bool
+	driveInfo       string
+	playlist        []player.PlaylistEntry
+	playlistCurrent int
+	playlistEOT     bool
 }
 
 // New creates the TUI model.
 func New(p *player.Player, ctx context.Context, driveInfo string) Model {
 	return Model{
-		player:    p,
-		ctx:       ctx,
-		state:     player.Stopped,
-		driveInfo: driveInfo,
+		player:          p,
+		ctx:             ctx,
+		state:           player.Stopped,
+		driveInfo:       driveInfo,
+		playlistCurrent: -1,
 	}
 }
 
@@ -71,8 +75,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.duration = msg.Duration
 		return m, nil
 
+	case player.PlaylistUpdateMsg:
+		m.playlist = msg.Entries
+		m.playlistCurrent = msg.Current
+		m.playlistEOT = msg.EOT
+		return m, nil
+
 	case player.TrackEndMsg:
-		// Auto-advance to next file.
 		m.player.Forward(m.ctx)
 		return m, nil
 
@@ -156,18 +165,26 @@ func (m Model) View() string {
 	// Progress bar.
 	b.WriteString("  " + m.renderProgress(40) + "\n\n")
 
+	// Playlist.
+	if len(m.playlist) > 0 {
+		b.WriteString(m.renderPlaylist())
+		b.WriteString("\n")
+	}
+
 	// Tape status.
-	tapeStr := fmt.Sprintf("Tape: File %d", m.tape.FileNumber)
+	tapeStr := ""
 	if m.tape.BytesRead > 0 {
-		tapeStr += fmt.Sprintf(" | %.1f MB", float64(m.tape.BytesRead)/1e6)
+		tapeStr = fmt.Sprintf("Tape: %.1f MB", float64(m.tape.BytesRead)/1e6)
 		if !m.tape.Complete {
 			tapeStr += " loading..."
 		}
+		if m.tape.ReadRate > 0 {
+			tapeStr += fmt.Sprintf(" | %.1f MB/s", m.tape.ReadRate)
+		}
 	}
-	if m.tape.ReadRate > 0 {
-		tapeStr += fmt.Sprintf(" | %.1f MB/s", m.tape.ReadRate)
+	if tapeStr != "" {
+		b.WriteString("  " + tapeStatusStyle.Render(tapeStr) + "\n\n")
 	}
-	b.WriteString("  " + tapeStatusStyle.Render(tapeStr) + "\n\n")
 
 	// Error.
 	if m.lastErr != "" {
@@ -178,6 +195,42 @@ func (m Model) View() string {
 	b.WriteString("  " + helpStyle.Render("[space] play/pause  [f] next  [b] prev  [s] stop  [r] rewind  [q] quit") + "\n")
 
 	return borderStyle.Render(b.String())
+}
+
+func (m Model) renderPlaylist() string {
+	var b strings.Builder
+	for _, e := range m.playlist {
+		prefix := "  "
+		suffix := ""
+
+		if e.Index == m.playlistCurrent {
+			prefix = " ▶"
+		}
+
+		title := e.Info.Title
+		if title == "" {
+			title = fmt.Sprintf("Track %d", e.Index+1)
+		}
+
+		if e.Cached {
+			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB]", float64(e.Size)/1e6))
+		} else {
+			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, not cached]", float64(e.Size)/1e6))
+		}
+
+		line := fmt.Sprintf("%s %d. %s%s", prefix, e.Index+1, title, suffix)
+		if e.Index == m.playlistCurrent {
+			b.WriteString("  " + valueStyle.Render(line) + "\n")
+		} else {
+			b.WriteString("  " + labelStyle.Render(line) + "\n")
+		}
+	}
+	if m.playlistEOT {
+		b.WriteString("  " + tapeStatusStyle.Render("  -- end of tape --") + "\n")
+	} else if len(m.playlist) > 0 {
+		b.WriteString("  " + tapeStatusStyle.Render("  -- more on tape --") + "\n")
+	}
+	return b.String()
 }
 
 func (m Model) renderState() (string, string) {

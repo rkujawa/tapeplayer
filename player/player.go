@@ -14,51 +14,50 @@ import (
 )
 
 // Player coordinates tape reading, FLAC decoding, and audio playback.
-// It runs background goroutines and communicates with the bubbletea
-// TUI via Program.Send.
+// Navigation is playlist-based: the playlist grows as files are
+// discovered from tape, and tracks can be replayed from cache without
+// re-reading the tape.
 type Player struct {
-	drive     *tape.Drive
-	logger    *slog.Logger
-	prog      *tea.Program
-	readBuf   int // tape read buffer size in bytes
+	drive    *tape.Drive
+	logger   *slog.Logger
+	prog     *tea.Program
+	readBuf  int       // tape read buffer size in bytes
+	playlist *Playlist // discovered files with LRU cache
 
 	mu        sync.Mutex
-	wg        sync.WaitGroup // tracks readFromTape and startDecoder goroutines
+	wg        sync.WaitGroup
 	state     State
-	fileNum   int            // current file number on tape (1-based)
 	cancel    context.CancelFunc
 	audioDev  *audioDevice
-	history   [][]byte       // buffered files for "previous" (last 3)
-
-	// Current track state (valid during Loading/Playing/Paused).
 	streamBuf *streamBuffer
-	track     TrackInfo
 	decoder   *flacDecoder
 	startTime time.Time
 	bytesRead int64
 }
 
-const maxHistory = 3
-
-// New creates a Player for the given tape drive. readBufSize sets the
-// tape read buffer size (must be >= the drive's configured block size
-// for fixed-block mode). Use 0 for a sensible default (256KB).
-func New(drive *tape.Drive, logger *slog.Logger, readBufSize int) *Player {
+// New creates a Player. readBufSize sets the tape read buffer (0 = 256KB).
+// cacheLimit sets the maximum memory for cached tracks (0 = 500MB).
+func New(drive *tape.Drive, logger *slog.Logger, readBufSize int, cacheLimit int64) *Player {
 	if readBufSize <= 0 {
-		readBufSize = 262144 // 256KB default
+		readBufSize = 262144
 	}
 	return &Player{
-		drive:   drive,
-		logger:  logger,
-		readBuf: readBufSize,
-		state:   Stopped,
+		drive:    drive,
+		logger:   logger,
+		readBuf:  readBufSize,
+		playlist: NewPlaylist(cacheLimit),
+		state:    Stopped,
 	}
 }
 
 // SetProgram sets the bubbletea program for sending UI messages.
-// Must be called before Play.
 func (p *Player) SetProgram(prog *tea.Program) {
 	p.prog = prog
+}
+
+// Playlist returns the playlist for UI queries.
+func (p *Player) Playlist() *Playlist {
+	return p.playlist
 }
 
 // State returns the current player state.
@@ -81,31 +80,40 @@ func (p *Player) sendMsg(msg tea.Msg) {
 	}
 }
 
+func (p *Player) sendPlaylistUpdate() {
+	entries, current, eot := p.playlist.Snapshot()
+	p.sendMsg(PlaylistUpdateMsg{
+		Entries: entries,
+		Current: current,
+		EOT:     eot,
+	})
+}
+
 // Play starts or resumes playback.
 func (p *Player) Play(ctx context.Context) {
 	p.mu.Lock()
 	state := p.state
 	p.mu.Unlock()
 
-	p.logger.Debug("player: Play called", "state", state)
+	p.logger.Debug("player: Play", "state", state)
 
 	switch state {
 	case Stopped:
-		p.startTrack(ctx)
+		cur := p.playlist.Current()
+		if cur >= 0 && p.playlist.IsCached(cur) {
+			p.playIndex(ctx, cur)
+		} else {
+			// Play next undiscovered track from tape.
+			p.playIndex(ctx, p.playlist.TapeHead())
+		}
 	case Paused:
 		p.resume()
-	case Playing, Loading:
-		// Already playing/loading — ignore.
 	}
 }
 
 // Pause pauses playback.
 func (p *Player) Pause() {
-	p.mu.Lock()
-	state := p.state
-	p.mu.Unlock()
-
-	if state == Playing {
+	if p.State() == Playing {
 		p.setState(Paused)
 		if p.audioDev != nil {
 			p.audioDev.pause()
@@ -115,13 +123,9 @@ func (p *Player) Pause() {
 
 // TogglePlayPause toggles between play and pause.
 func (p *Player) TogglePlayPause(ctx context.Context) {
-	p.mu.Lock()
-	state := p.state
-	p.mu.Unlock()
+	p.logger.Debug("player: TogglePlayPause", "state", p.State())
 
-	p.logger.Debug("player: TogglePlayPause called", "state", state)
-
-	switch state {
+	switch p.State() {
 	case Playing:
 		p.Pause()
 	case Paused:
@@ -143,60 +147,45 @@ func (p *Player) Stop() {
 	if p.audioDev != nil {
 		p.audioDev.stop()
 	}
-	p.wg.Wait() // wait for readFromTape + startDecoder to exit
+	p.wg.Wait()
 	p.setState(Stopped)
 }
 
-// Forward skips to the next file on tape.
+// Forward skips to the next track.
 func (p *Player) Forward(ctx context.Context) {
 	p.Stop()
-	// The tape reader goroutine reads past the current file's remaining
-	// data + filemark. We just start a new track — the tape is already
-	// positioned at the next file if the reader finished, or we need
-	// to skip. For simplicity, start a new track which reads from the
-	// current tape position.
-	p.startTrack(ctx)
+	nextIdx := p.playlist.Current() + 1
+	if nextIdx < 0 {
+		nextIdx = 0
+	}
+	if p.playlist.IsEOT() && nextIdx >= p.playlist.Len() {
+		p.sendMsg(EOTMsg{})
+		return
+	}
+	p.playIndex(ctx, nextIdx)
 }
 
-// Back restarts the current track. If called within the first 3 seconds,
-// goes to the previous track (from history buffer).
+// Back restarts the current track, or goes to the previous track
+// if called within the first 3 seconds of playback.
 func (p *Player) Back(ctx context.Context) {
 	p.mu.Lock()
 	elapsed := time.Since(p.startTime)
-	histLen := len(p.history)
 	p.mu.Unlock()
 
 	p.Stop()
 
-	if elapsed < 3*time.Second && histLen > 0 {
-		// Go to previous track from history.
-		p.mu.Lock()
-		prev := p.history[histLen-1]
-		p.history = p.history[:histLen-1]
-		p.fileNum--
-		p.mu.Unlock()
-		p.startTrackFromBuffer(ctx, prev)
-	} else {
-		// Restart current track from buffer if available.
-		p.mu.Lock()
-		buf := p.streamBuf
-		p.mu.Unlock()
-
-		if buf != nil && buf.IsComplete() {
-			p.startTrackFromBuffer(ctx, buf.Bytes())
-		}
-		// If buffer not complete, can't restart — just stay stopped.
+	cur := p.playlist.Current()
+	if elapsed < 3*time.Second && cur > 0 {
+		p.playIndex(ctx, cur-1)
+	} else if cur >= 0 {
+		p.playIndex(ctx, cur)
 	}
 }
 
-// RewindTape rewinds the tape to BOT.
+// RewindTape rewinds the tape to BOT. Does NOT clear the playlist —
+// cached data and metadata are preserved.
 func (p *Player) RewindTape(ctx context.Context) {
 	p.Stop()
-	p.mu.Lock()
-	p.fileNum = 0
-	p.history = nil
-	p.mu.Unlock()
-
 	if err := p.drive.Rewind(ctx); err != nil {
 		p.sendMsg(ErrorMsg{Err: fmt.Errorf("rewind: %w", err)})
 	}
@@ -227,61 +216,105 @@ func (p *Player) resume() {
 	}
 }
 
-func (p *Player) startTrack(ctx context.Context) {
-	p.logger.Debug("player: startTrack")
+// playIndex plays the track at the given playlist index. If the track
+// is cached, plays from memory. If it's the next undiscovered track,
+// reads from tape. If it's a discovered but evicted track, rewinds
+// and re-reads from tape.
+func (p *Player) playIndex(ctx context.Context, index int) {
+	p.logger.Debug("player: playIndex", "index", index,
+		"playlistLen", p.playlist.Len(), "tapeHead", p.playlist.TapeHead())
+
 	trackCtx, cancel := context.WithCancel(ctx)
 
 	p.mu.Lock()
-	// Save current track to history if complete.
-	if p.streamBuf != nil && p.streamBuf.IsComplete() {
-		if len(p.history) >= maxHistory {
-			p.history = p.history[1:]
-		}
-		p.history = append(p.history, p.streamBuf.Bytes())
-	}
 	p.cancel = cancel
-	p.fileNum++
-	p.streamBuf = newStreamBuffer()
 	p.decoder = nil
 	p.bytesRead = 0
 	p.startTime = time.Now()
-	sb := p.streamBuf
-	fileNum := p.fileNum
 	p.mu.Unlock()
 
-	p.setState(Loading)
+	p.playlist.SetCurrent(index)
+	p.sendPlaylistUpdate()
 
-	// Start tape reader goroutine.
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		p.readFromTape(trackCtx, sb, fileNum)
-	}()
+	if p.playlist.IsCached(index) {
+		// Play from cache — instant.
+		p.logger.Debug("player: playing from cache", "index", index)
+		data := p.playlist.Data(index)
+		sb := newStreamBuffer()
+		sb.Write(data)
+		sb.Complete()
+
+		p.mu.Lock()
+		p.streamBuf = sb
+		p.mu.Unlock()
+
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.startDecoder(trackCtx, sb, index)
+		}()
+		return
+	}
+
+	if index == p.playlist.TapeHead() {
+		// Read next file from tape.
+		p.logger.Debug("player: reading from tape", "index", index)
+		sb := newStreamBuffer()
+
+		p.mu.Lock()
+		p.streamBuf = sb
+		p.mu.Unlock()
+
+		p.setState(Loading)
+
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.readFromTape(trackCtx, sb, index)
+		}()
+		return
+	}
+
+	if index < p.playlist.Len() {
+		// Track was discovered but data evicted. Need to rewind and
+		// re-read from tape. This is expensive.
+		p.logger.Warn("player: cache miss, rewinding tape", "index", index)
+		p.setState(Loading)
+		p.sendMsg(ErrorMsg{Err: fmt.Errorf("rewinding tape to re-read track %d (evicted from cache)", index+1)})
+
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			if err := p.drive.Rewind(trackCtx); err != nil {
+				p.sendMsg(ErrorMsg{Err: fmt.Errorf("rewind: %w", err)})
+				p.setState(Stopped)
+				return
+			}
+			// Skip past tracks 0..index-1 by reading and discarding.
+			for i := range index {
+				sb := newStreamBuffer()
+				p.readFromTape(trackCtx, sb, i)
+				// Data goes to playlist cache via readFromTape → Add.
+			}
+			// Now read the target track.
+			sb := newStreamBuffer()
+			p.mu.Lock()
+			p.streamBuf = sb
+			p.mu.Unlock()
+			p.readFromTape(trackCtx, sb, index)
+		}()
+		return
+	}
+
+	// Index beyond what's discovered and not the next tape position.
+	// This shouldn't happen in normal operation.
+	p.logger.Error("player: invalid index", "index", index,
+		"playlistLen", p.playlist.Len(), "tapeHead", p.playlist.TapeHead())
+	p.setState(Stopped)
 }
 
-func (p *Player) startTrackFromBuffer(ctx context.Context, data []byte) {
-	trackCtx, cancel := context.WithCancel(ctx)
-
-	p.mu.Lock()
-	p.cancel = cancel
-	// Create a pre-filled, already-complete streamBuffer.
-	sb := newStreamBuffer()
-	sb.Write(data)
-	sb.Complete()
-	p.streamBuf = sb
-	p.startTime = time.Now()
-	p.mu.Unlock()
-
-	// Skip tape reading — go straight to decode in a goroutine.
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		p.startDecoder(trackCtx, sb)
-	}()
-}
-
-func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int) {
-	p.logger.Debug("tape: reading file", "fileNum", fileNum, "readBuf", p.readBuf)
+func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) {
+	p.logger.Debug("tape: reading file", "index", index, "readBuf", p.readBuf)
 	buf := make([]byte, p.readBuf)
 	readStart := time.Now()
 
@@ -296,10 +329,17 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 		n, err := p.drive.Read(ctx, buf)
 		if err != nil {
 			if errors.Is(err, tape.ErrFilemark) {
-				p.logger.Debug("tape: filemark", "fileNum", fileNum, "bytesRead", sb.Len())
+				p.logger.Debug("tape: filemark", "index", index, "bytesRead", sb.Len())
 				sb.Complete()
+
+				// Add to playlist (extracts metadata from FLAC header).
+				info := p.extractMetadata(sb.Bytes())
+				pl_idx := p.playlist.Add(sb.Bytes(), info)
+				p.playlist.UpdateInfo(pl_idx, info)
+				p.sendPlaylistUpdate()
+
 				p.sendMsg(TapeStatusMsg{Status: TapeStatus{
-					FileNumber:  fileNum,
+					FileNumber:  index + 1,
 					BytesRead:   int64(sb.Len()),
 					BufferBytes: sb.Len(),
 					Complete:    true,
@@ -307,15 +347,15 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 				return
 			}
 			if errors.Is(err, tape.ErrBlankCheck) {
-				p.logger.Debug("tape: blank check (EOT)", "fileNum", fileNum)
+				p.logger.Debug("tape: blank check (EOT)", "index", index)
 				sb.Complete()
+				p.playlist.MarkEOT()
+				p.sendPlaylistUpdate()
 				p.sendMsg(EOTMsg{})
 				return
 			}
 			if errors.Is(err, tape.ErrILI) && n > 0 {
-				// Short record — normal for the last record before a filemark.
 				p.logger.Debug("tape: short record (ILI)", "n", n)
-				// Fall through to write the data we got.
 			} else {
 				p.logger.Error("tape: read error", "err", err)
 				sb.Abort(err)
@@ -337,7 +377,7 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 				rate = float64(br) / elapsed / 1e6
 			}
 			p.sendMsg(TapeStatusMsg{Status: TapeStatus{
-				FileNumber:  fileNum,
+				FileNumber:  index + 1,
 				BytesRead:   br,
 				ReadRate:    rate,
 				BufferBytes: sb.Len(),
@@ -345,26 +385,25 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 			}})
 		}
 
-		// Start decoder once we have enough data for FLAC metadata
-		// (typically a few KB). Launch exactly once.
+		// Start decoder once we have data. Launch exactly once.
 		p.mu.Lock()
 		needStart := p.decoder == nil && sb.Len() > 0
 		if needStart {
-			p.decoder = &flacDecoder{} // placeholder to prevent re-launch
+			p.decoder = &flacDecoder{}
 		}
 		p.mu.Unlock()
 		if needStart {
 			p.wg.Add(1)
 			go func() {
 				defer p.wg.Done()
-				p.startDecoder(ctx, sb)
+				p.startDecoder(ctx, sb, index)
 			}()
 		}
 	}
 }
 
-func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
-	p.logger.Debug("decoder: starting")
+func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) {
+	p.logger.Debug("decoder: starting", "index", index)
 
 	dec, err := newFlacDecoder(sb, p.logger)
 	if err != nil {
@@ -376,11 +415,13 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 
 	p.mu.Lock()
 	p.decoder = dec
-	p.track = dec.trackInfo()
-	info := p.track
+	info := dec.trackInfo()
 	p.mu.Unlock()
 
+	// Update playlist metadata.
+	p.playlist.UpdateInfo(index, info)
 	p.sendMsg(TrackInfoMsg{Info: info})
+	p.sendPlaylistUpdate()
 
 	// Initialize audio device if needed.
 	if p.audioDev == nil {
@@ -402,7 +443,7 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 		return
 	}
 
-	// Decode loop: decode FLAC frames → convert to PCM → write to ring buffer.
+	// Decode loop.
 	for {
 		select {
 		case <-ctx.Done():
@@ -410,7 +451,6 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 		default:
 		}
 
-		// If paused, wait briefly.
 		if p.State() == Paused {
 			time.Sleep(50 * time.Millisecond)
 			continue
@@ -419,9 +459,7 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 		samples, err := dec.nextFrame()
 		if err != nil {
 			if err.Error() == "EOF" {
-				// Track finished.
-				p.logger.Debug("decoder: track complete")
-				// Drain audio buffer before signaling end.
+				p.logger.Debug("decoder: track complete", "index", index)
 				for p.audioDev.ring.Available() > 0 {
 					time.Sleep(10 * time.Millisecond)
 				}
@@ -436,12 +474,10 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 
 		if len(samples) > 0 {
 			if _, err := p.audioDev.ring.Write(samples); err != nil {
-				// Ring buffer closed — stop requested.
 				p.logger.Debug("decoder: ring buffer closed, stopping")
 				return
 			}
 
-			// Send playback progress.
 			pos := dec.position()
 			p.sendMsg(PlaybackProgressMsg{
 				Position: pos,
@@ -449,4 +485,21 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 			})
 		}
 	}
+}
+
+// extractMetadata parses FLAC metadata from raw data without consuming
+// the data for playback. Used to populate playlist entries.
+func (p *Player) extractMetadata(data []byte) TrackInfo {
+	if len(data) < 42 {
+		return TrackInfo{}
+	}
+	sb := newStreamBuffer()
+	sb.Write(data)
+	sb.Complete()
+	dec, err := newFlacDecoder(sb, p.logger)
+	if err != nil {
+		p.logger.Debug("metadata: parse failed", "err", err)
+		return TrackInfo{}
+	}
+	return dec.trackInfo()
 }

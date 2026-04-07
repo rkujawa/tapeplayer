@@ -118,7 +118,7 @@ func main() {
 	if *bs > 0 {
 		readBuf = int(*bs)
 	}
-	p := player.New(drive, logger, readBuf)
+	p := player.New(drive, logger, readBuf, 0) // 0 = default 500MB cache
 	defer p.Close()
 
 	// Create TUI.

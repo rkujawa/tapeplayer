@@ -84,5 +84,12 @@ type EOTMsg struct{}
 // ErrorMsg carries an error from a background goroutine.
 type ErrorMsg struct{ Err error }
 
+// PlaylistUpdateMsg carries the updated playlist for UI display.
+type PlaylistUpdateMsg struct {
+	Entries []PlaylistEntry
+	Current int
+	EOT     bool
+}
+
 // TickMsg is sent periodically to update the UI.
 type TickMsg struct{}
