@@ -32,6 +32,7 @@ func main() {
 	lun := flag.Uint64("lun", 0, "LUN number")
 	initiatorName := flag.String("initiator-name", "", "initiator IQN (optional)")
 	bs := flag.Uint("bs", 0, "fixed block size in bytes (0 = variable block mode)")
+	decompress := flag.Bool("decompress", true, "enable hardware decompression for compressed tapes")
 	debugFile := flag.String("debug", "", "debug log file (empty = no debug logging)")
 	flag.Parse()
 
@@ -84,6 +85,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: open tape LUN %d: %v\n", *lun, err)
 		os.Exit(2)
+	}
+
+	// Enable hardware decompression if requested (default: yes).
+	if *decompress {
+		if err := drive.SetCompression(ctx, true, true); err != nil {
+			// Not fatal — drive may not support compression page.
+			logger.Warn("compression: could not enable", "err", err)
+		}
 	}
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
