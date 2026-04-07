@@ -233,6 +233,7 @@ func (p *Player) startTrack(ctx context.Context) {
 	p.cancel = cancel
 	p.fileNum++
 	p.streamBuf = newStreamBuffer()
+	p.decoder = nil
 	p.bytesRead = 0
 	p.startTime = time.Now()
 	sb := p.streamBuf
@@ -322,14 +323,15 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 		}
 
 		// Start decoder once we have enough data for FLAC metadata
-		// (typically a few KB). Check once — after first successful read.
-		if sb.Len() > 0 {
-			p.mu.Lock()
-			needStart := p.decoder == nil || p.state == Loading
-			p.mu.Unlock()
-			if needStart {
-				go p.startDecoder(ctx, sb)
-			}
+		// (typically a few KB). Launch exactly once.
+		p.mu.Lock()
+		needStart := p.decoder == nil && sb.Len() > 0
+		if needStart {
+			p.decoder = &flacDecoder{} // placeholder to prevent re-launch
+		}
+		p.mu.Unlock()
+		if needStart {
+			go p.startDecoder(ctx, sb)
 		}
 	}
 }
