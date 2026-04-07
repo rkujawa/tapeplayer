@@ -266,8 +266,8 @@ func (p *Player) startTrackFromBuffer(ctx context.Context, data []byte) {
 	p.startTime = time.Now()
 	p.mu.Unlock()
 
-	// Skip tape reading — go straight to decode.
-	p.startDecoder(trackCtx, sb)
+	// Skip tape reading — go straight to decode in a goroutine.
+	go p.startDecoder(trackCtx, sb)
 }
 
 func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int) {
