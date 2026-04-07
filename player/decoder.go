@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mewkiz/flac"
@@ -22,9 +23,9 @@ type flacDecoder struct {
 // newFlacDecoder creates a FLAC decoder reading from r.
 // The reader can be a streamBuffer (blocks until data available).
 func newFlacDecoder(r io.Reader, logger *slog.Logger) (*flacDecoder, error) {
-	stream, err := flac.New(r)
+	stream, err := flac.Parse(r)
 	if err != nil {
-		return nil, fmt.Errorf("flac.New: %w", err)
+		return nil, fmt.Errorf("flac.Parse: %w", err)
 	}
 	return &flacDecoder{
 		stream: stream,
@@ -48,14 +49,14 @@ func (d *flacDecoder) trackInfo() TrackInfo {
 		}
 		if vc, ok := block.Body.(*meta.VorbisComment); ok {
 			for _, tag := range vc.Tags {
-				switch tag[0] {
-				case "ARTIST", "artist":
+				switch strings.ToUpper(tag[0]) {
+				case "ARTIST":
 					info.Artist = tag[1]
-				case "ALBUM", "album":
+				case "ALBUM":
 					info.Album = tag[1]
-				case "TITLE", "title":
+				case "TITLE":
 					info.Title = tag[1]
-				case "TRACKNUMBER", "tracknumber":
+				case "TRACKNUMBER":
 					info.TrackNum = tag[1]
 				}
 			}

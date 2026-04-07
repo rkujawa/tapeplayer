@@ -302,10 +302,16 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int
 				p.sendMsg(EOTMsg{})
 				return
 			}
-			p.logger.Error("tape: read error", "err", err)
-			sb.Abort(err)
-			p.sendMsg(ErrorMsg{Err: err})
-			return
+			if errors.Is(err, tape.ErrILI) && n > 0 {
+				// Short record — normal for the last record before a filemark.
+				p.logger.Debug("tape: short record (ILI)", "n", n)
+				// Fall through to write the data we got.
+			} else {
+				p.logger.Error("tape: read error", "err", err)
+				sb.Abort(err)
+				p.sendMsg(ErrorMsg{Err: err})
+				return
+			}
 		}
 
 		if n > 0 {
