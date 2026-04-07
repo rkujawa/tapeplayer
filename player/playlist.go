@@ -49,14 +49,14 @@ func (pl *Playlist) Add(data []byte, info TrackInfo) int {
 	defer pl.mu.Unlock()
 
 	idx := len(pl.entries)
+	// Take ownership of data — caller must not use the slice after Add.
 	entry := &PlaylistEntry{
 		Index:    idx,
 		Info:     info,
 		Size:     int64(len(data)),
-		data:     make([]byte, len(data)),
+		data:     data,
 		lastUsed: time.Now(),
 	}
-	copy(entry.data, data)
 	pl.entries = append(pl.entries, entry)
 	pl.cacheUsed += entry.Size
 	pl.tapeHead = idx + 1

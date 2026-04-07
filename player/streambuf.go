@@ -24,6 +24,18 @@ type streamBuffer struct {
 	err      error // non-nil if tape read failed
 }
 
+// newStreamBufferFrom creates a pre-filled, completed streamBuffer
+// wrapping existing data without copying. The caller must not modify
+// data after this call.
+func newStreamBufferFrom(data []byte) *streamBuffer {
+	sb := &streamBuffer{
+		data:     data,
+		complete: true,
+	}
+	sb.cond = sync.NewCond(&sb.mu)
+	return sb
+}
+
 // newStreamBuffer creates a ready-to-use streamBuffer.
 func newStreamBuffer() *streamBuffer {
 	sb := &streamBuffer{}

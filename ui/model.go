@@ -213,9 +213,9 @@ func (m Model) renderPlaylist() string {
 		}
 
 		if e.Cached {
-			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB]", float64(e.Size)/1e6))
+			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, cached]", float64(e.Size)/1e6))
 		} else {
-			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, not cached]", float64(e.Size)/1e6))
+			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, on tape]", float64(e.Size)/1e6))
 		}
 
 		line := fmt.Sprintf("%s %d. %s%s", prefix, e.Index+1, title, suffix)

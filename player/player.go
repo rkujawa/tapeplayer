@@ -229,6 +229,7 @@ func (p *Player) playIndex(ctx context.Context, index int) {
 	p.mu.Lock()
 	p.cancel = cancel
 	p.decoder = nil
+	p.streamBuf = nil // release previous track's buffer for GC
 	p.bytesRead = 0
 	p.startTime = time.Now()
 	p.mu.Unlock()
@@ -237,12 +238,10 @@ func (p *Player) playIndex(ctx context.Context, index int) {
 	p.sendPlaylistUpdate()
 
 	if p.playlist.IsCached(index) {
-		// Play from cache — instant.
+		// Play from cache — instant, no copy.
 		p.logger.Debug("player: playing from cache", "index", index)
 		data := p.playlist.Data(index)
-		sb := newStreamBuffer()
-		sb.Write(data)
-		sb.Complete()
+		sb := newStreamBufferFrom(data)
 
 		p.mu.Lock()
 		p.streamBuf = sb
@@ -332,10 +331,12 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 				p.logger.Debug("tape: filemark", "index", index, "bytesRead", sb.Len())
 				sb.Complete()
 
-				// Add to playlist (extracts metadata from FLAC header).
-				info := p.extractMetadata(sb.Bytes())
-				pl_idx := p.playlist.Add(sb.Bytes(), info)
-				p.playlist.UpdateInfo(pl_idx, info)
+				// Copy data for playlist — streamBuffer is still used by decoder.
+				raw := sb.Bytes()
+				dataCopy := make([]byte, len(raw))
+				copy(dataCopy, raw)
+				info := p.extractMetadata(dataCopy)
+				p.playlist.Add(dataCopy, info)
 				p.sendPlaylistUpdate()
 
 				p.sendMsg(TapeStatusMsg{Status: TapeStatus{
@@ -493,9 +494,7 @@ func (p *Player) extractMetadata(data []byte) TrackInfo {
 	if len(data) < 42 {
 		return TrackInfo{}
 	}
-	sb := newStreamBuffer()
-	sb.Write(data)
-	sb.Complete()
+	sb := newStreamBufferFrom(data)
 	dec, err := newFlacDecoder(sb, p.logger)
 	if err != nil {
 		p.logger.Debug("metadata: parse failed", "err", err)
