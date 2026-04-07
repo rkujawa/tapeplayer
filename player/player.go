@@ -379,6 +379,7 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 		p.audioDev = ad
 	}
 
+	p.audioDev.reset()
 	p.setState(Playing)
 	p.audioDev.start()
 
@@ -415,7 +416,11 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 		}
 
 		if len(samples) > 0 {
-			p.audioDev.ring.Write(samples)
+			if _, err := p.audioDev.ring.Write(samples); err != nil {
+				// Ring buffer closed — stop requested.
+				p.logger.Debug("decoder: ring buffer closed, stopping")
+				return
+			}
 
 			// Send playback progress.
 			pos := dec.position()

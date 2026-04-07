@@ -76,9 +76,15 @@ func (ad *audioDevice) start() {
 	}
 }
 
-// stop halts audio playback and clears the ring buffer.
+// stop halts audio playback. Closes the ring buffer first to unblock
+// any writer (decoder goroutine) spinning on a full buffer.
 func (ad *audioDevice) stop() {
+	ad.ring.Close()
 	ad.device.Stop()
+}
+
+// reset prepares the ring buffer for a new track.
+func (ad *audioDevice) reset() {
 	ad.ring.Reset()
 }
 

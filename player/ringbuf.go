@@ -1,6 +1,10 @@
 package player
 
-import "sync"
+import (
+	"io"
+	"runtime"
+	"sync"
+)
 
 // ringBuffer is a fixed-size lock-free-ish circular buffer for PCM audio
 // samples. The decoder goroutine writes decoded samples, and the malgo
@@ -8,12 +12,13 @@ import "sync"
 // callback must not block for long, so reads are non-blocking (return
 // silence on underrun).
 type ringBuffer struct {
-	mu   sync.Mutex
-	data []byte
-	size int
-	rpos int // read position
-	wpos int // write position
-	used int // bytes currently buffered
+	mu     sync.Mutex
+	data   []byte
+	size   int
+	rpos   int  // read position
+	wpos   int  // write position
+	used   int  // bytes currently buffered
+	closed bool // true after Close — Write returns immediately
 }
 
 // newRingBuffer creates a ring buffer with the given capacity in bytes.
@@ -31,11 +36,15 @@ func (rb *ringBuffer) Write(p []byte) (int, error) {
 	written := 0
 	for written < len(p) {
 		rb.mu.Lock()
+		if rb.closed {
+			rb.mu.Unlock()
+			return written, io.EOF
+		}
 		avail := rb.size - rb.used
 		if avail == 0 {
 			rb.mu.Unlock()
-			// Spin briefly — the audio callback will drain soon.
-			// In practice, this yields the goroutine.
+			// Yield — the audio callback will drain soon.
+			runtime.Gosched()
 			continue
 		}
 		n := len(p) - written
@@ -107,11 +116,19 @@ func (rb *ringBuffer) Available() int {
 	return rb.used
 }
 
-// Reset clears the ring buffer.
+// Reset clears the ring buffer and reopens it for writing.
 func (rb *ringBuffer) Reset() {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.rpos = 0
 	rb.wpos = 0
 	rb.used = 0
+	rb.closed = false
+}
+
+// Close signals writers to stop. Any blocked or future Write returns io.EOF.
+func (rb *ringBuffer) Close() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.closed = true
 }
