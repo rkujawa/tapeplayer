@@ -97,8 +97,12 @@ func main() {
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
 
-	// Create player.
-	p := player.New(drive, logger)
+	// Create player. Read buffer must be >= block size for fixed-block mode.
+	readBuf := 0 // default 256KB
+	if *bs > 0 {
+		readBuf = int(*bs)
+	}
+	p := player.New(drive, logger, readBuf)
 	defer p.Close()
 
 	// Create TUI.

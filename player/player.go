@@ -17,9 +17,10 @@ import (
 // It runs background goroutines and communicates with the bubbletea
 // TUI via Program.Send.
 type Player struct {
-	drive  *tape.Drive
-	logger *slog.Logger
-	prog   *tea.Program
+	drive     *tape.Drive
+	logger    *slog.Logger
+	prog      *tea.Program
+	readBuf   int // tape read buffer size in bytes
 
 	mu        sync.Mutex
 	state     State
@@ -38,12 +39,18 @@ type Player struct {
 
 const maxHistory = 3
 
-// New creates a Player for the given tape drive.
-func New(drive *tape.Drive, logger *slog.Logger) *Player {
+// New creates a Player for the given tape drive. readBufSize sets the
+// tape read buffer size (must be >= the drive's configured block size
+// for fixed-block mode). Use 0 for a sensible default (256KB).
+func New(drive *tape.Drive, logger *slog.Logger, readBufSize int) *Player {
+	if readBufSize <= 0 {
+		readBufSize = 262144 // 256KB default
+	}
 	return &Player{
-		drive:  drive,
-		logger: logger,
-		state:  Stopped,
+		drive:   drive,
+		logger:  logger,
+		readBuf: readBufSize,
+		state:   Stopped,
 	}
 }
 
@@ -264,8 +271,8 @@ func (p *Player) startTrackFromBuffer(ctx context.Context, data []byte) {
 }
 
 func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, fileNum int) {
-	p.logger.Debug("tape: reading file", "fileNum", fileNum)
-	buf := make([]byte, 65536)
+	p.logger.Debug("tape: reading file", "fileNum", fileNum, "readBuf", p.readBuf)
+	buf := make([]byte, p.readBuf)
 	readStart := time.Now()
 
 	for {
