@@ -339,6 +339,7 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 
 	dec, err := newFlacDecoder(sb, p.logger)
 	if err != nil {
+		p.logger.Error("decoder: init failed", "err", err)
 		p.sendMsg(ErrorMsg{Err: fmt.Errorf("FLAC decode init: %w", err)})
 		p.setState(Stopped)
 		return
@@ -392,7 +393,9 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer) {
 				p.sendMsg(TrackEndMsg{})
 				return
 			}
+			p.logger.Error("decoder: frame error", "err", err)
 			p.sendMsg(ErrorMsg{Err: fmt.Errorf("FLAC decode: %w", err)})
+			p.setState(Stopped)
 			return
 		}
 
