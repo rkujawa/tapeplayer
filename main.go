@@ -57,6 +57,16 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Second Ctrl+C force-quits without cleanup. This prevents unkillable
+	// processes when the audio device is stuck in a kernel driver call.
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		<-sigCh // first signal handled by NotifyContext above
+		<-sigCh // second signal — force quit
+		os.Exit(1)
+	}()
+
 	// Connect to iSCSI target.
 	var opts []uiscsi.Option
 	opts = append(opts, uiscsi.WithTarget(*target))
