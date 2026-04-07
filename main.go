@@ -95,6 +95,12 @@ func main() {
 		}
 	}
 
+	// Rewind to BOT so file numbering is correct.
+	if err := drive.Rewind(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "error: rewind: %v\n", err)
+		os.Exit(2)
+	}
+
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
 
 	// Create player. Read buffer must be >= block size for fixed-block mode.
