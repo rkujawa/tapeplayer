@@ -83,7 +83,7 @@ func main() {
 	var opts []uiscsi.Option
 	opts = append(opts, uiscsi.WithTarget(*target))
 	opts = append(opts, uiscsi.WithLogger(sessLogger))
-	opts = append(opts, uiscsi.WithMaxRecvDataSegmentLength(262144)) // 256KB PDUs for tape throughput
+	opts = append(opts, uiscsi.WithMaxRecvDataSegmentLength(524288)) // 512KB = 1 PDU per block
 	if *initiatorName != "" {
 		opts = append(opts, uiscsi.WithInitiatorName(*initiatorName))
 	}
