@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/rkujawa/uiscsi"
@@ -35,6 +36,12 @@ func main() {
 	decompress := flag.Bool("decompress", false, "enable hardware decompression (for tapes written with drive compression)")
 	debugFile := flag.String("debug", "", "debug log file (empty = no debug logging)")
 	flag.Parse()
+
+	// Reduce GC frequency. The streamBuffer accumulates 400+ MB of live
+	// data. With GOGC=100, pipeline allocations (~75 MB/s garbage) trigger
+	// GC after ~6s, causing decode goroutine stalls. GOGC=400 delays the
+	// first GC to ~24s of headroom and reduces subsequent GC frequency.
+	debug.SetGCPercent(400)
 
 	if *portal == "" || *target == "" {
 		fmt.Fprintf(os.Stderr, "error: -portal and -target are required\n\n")
@@ -91,7 +98,6 @@ func main() {
 	// Open tape drive.
 	var tapeOpts []tape.Option
 	tapeOpts = append(tapeOpts, tape.WithLogger(logger))
-	tapeOpts = append(tapeOpts, tape.WithReadAhead(4)) // pre-fetch for throughput
 	if *bs > 0 {
 		tapeOpts = append(tapeOpts, tape.WithBlockSize(uint32(*bs)))
 	} else {
@@ -121,9 +127,12 @@ func main() {
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
 
-	// Create player. Read buffer must be >= block size for fixed-block mode.
-	readBuf := 0 // default 256KB
-	if *bs > 0 {
+	// Read buffer: 4MB for multi-block reads. One SCSI READ(6) fetches
+	// 8 blocks at 512KB each, reducing per-command overhead and keeping
+	// the tape streaming continuously. For variable-block: 4MB covers
+	// any reasonable record size.
+	readBuf := 4 * 1024 * 1024
+	if *bs > 0 && int(*bs) > readBuf {
 		readBuf = int(*bs)
 	}
 	p := player.New(drive, logger, readBuf, 0) // 0 = default 500MB cache
