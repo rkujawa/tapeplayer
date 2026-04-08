@@ -66,6 +66,27 @@ func (pl *Playlist) Add(data []byte, info TrackInfo) int {
 	return idx
 }
 
+// Recache restores cached data for an existing entry (e.g., after
+// rewind+skip re-reads a previously evicted track). The entry must
+// already exist at the given index.
+func (pl *Playlist) Recache(index int, data []byte) {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if index < 0 || index >= len(pl.entries) {
+		return
+	}
+	e := pl.entries[index]
+	if e.data != nil {
+		// Already cached — update in place.
+		pl.cacheUsed -= e.Size
+	}
+	e.data = data
+	e.Size = int64(len(data))
+	e.lastUsed = time.Now()
+	pl.cacheUsed += e.Size
+	pl.evictLocked()
+}
+
 // MarkEOT marks end of tape — no more entries will be discovered.
 func (pl *Playlist) MarkEOT() {
 	pl.mu.Lock()

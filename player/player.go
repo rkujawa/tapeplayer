@@ -336,7 +336,13 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 				dataCopy := make([]byte, len(raw))
 				copy(dataCopy, raw)
 				info := p.extractMetadata(dataCopy)
-				p.playlist.Add(dataCopy, info)
+				if index < p.playlist.Len() {
+					// Re-reading a known file (rewind+skip path) — update cache.
+					p.playlist.Recache(index, dataCopy)
+				} else {
+					// New file discovered from tape.
+					p.playlist.Add(dataCopy, info)
+				}
 				p.sendPlaylistUpdate()
 
 				p.sendMsg(TapeStatusMsg{Status: TapeStatus{
