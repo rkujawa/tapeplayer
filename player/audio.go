@@ -43,6 +43,8 @@ func newAudioDevice(sampleRate uint32, channels uint8, bitsPerSample uint8, logg
 	deviceConfig.Playback.Format = format
 	deviceConfig.Playback.Channels = uint32(channels)
 	deviceConfig.SampleRate = sampleRate
+	deviceConfig.PeriodSizeInFrames = 512  // ~11.6ms at 44100 Hz
+	deviceConfig.Periods = 4               // 4 periods = ~46ms total buffer
 	deviceConfig.Alsa.NoMMap = 1
 
 	ad := &audioDevice{
