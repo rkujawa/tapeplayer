@@ -127,11 +127,11 @@ func main() {
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
 
-	// Read buffer: 4MB for multi-block reads. One SCSI READ(6) fetches
-	// 8 blocks at 512KB each, reducing per-command overhead and keeping
-	// the tape streaming continuously. For variable-block: 4MB covers
-	// any reasonable record size.
-	readBuf := 4 * 1024 * 1024
+	// Read buffer: 2× block size for multi-block reads. One SCSI READ(6)
+	// fetches 2 blocks per command, halving per-command overhead while
+	// staying within drive/target transfer limits.
+	// For variable-block: 1MB covers reasonable record sizes.
+	readBuf := 1024 * 1024
 	if *bs > 0 && int(*bs) > readBuf {
 		readBuf = int(*bs)
 	}
