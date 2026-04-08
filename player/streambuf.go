@@ -6,120 +6,145 @@ import (
 	"sync"
 )
 
-// streamBuffer is a growable byte buffer with a blocking io.Reader.
-// A writer (tape reader goroutine) appends data via Write. A reader
-// (FLAC decoder) reads via Read, blocking when it catches up to the
-// write position. When Complete is called (filemark hit), the reader
-// receives io.EOF after consuming all data.
+// streamBuffer provides two independent interfaces for tape data:
 //
-// After Complete, the full contents are available via Bytes() for
-// replay (e.g., "previous track" restarts the decoder from the start
-// using bytes.NewReader(buf.Bytes())).
+//  1. An io.Reader (via Read) backed by a channel of chunks — lock-free
+//     for the hot path between tape reader and FLAC decoder.
+//  2. A Bytes() method that returns accumulated data for playlist cache
+//     after the file is complete.
+//
+// The tape writer calls Write (sends chunks to channel + accumulates).
+// The FLAC decoder calls Read (receives from channel). These never
+// contend on a mutex. Bytes() is only called after Complete, when the
+// writer is done.
 type streamBuffer struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	data     []byte
-	readPos  int
-	complete bool // true after filemark — no more writes expected
-	err      error // non-nil if tape read failed
+	ch       chan []byte    // chunks from writer to reader (hot path)
+	current  []byte        // partially consumed chunk from last Read
+	mu       sync.Mutex    // protects accum, complete, err — NOT the hot path
+	accum    []byte        // accumulated data for Bytes() / cache
+	readPos  int           // not used in channel mode
+	complete bool
+	err      error
+	closed   bool
 }
+
+const initialStreamBufCap = 64 * 1024 * 1024
 
 // newStreamBufferFrom creates a pre-filled, completed streamBuffer
 // wrapping existing data without copying. The caller must not modify
-// data after this call.
+// data after this call. Uses a pre-filled channel for Read.
 func newStreamBufferFrom(data []byte) *streamBuffer {
 	sb := &streamBuffer{
-		data:     data,
+		ch:       make(chan []byte, 1),
+		accum:    data,
 		complete: true,
 	}
-	sb.cond = sync.NewCond(&sb.mu)
+	// Put all data as one chunk and close.
+	sb.ch <- data
+	close(sb.ch)
 	return sb
 }
-
-// Initial streamBuffer capacity. Pre-allocating avoids costly realloc+copy
-// of the entire buffer as it grows. 64MB covers most FLAC files; for larger
-// files, append grows by doubling (at most one realloc per doubling).
-const initialStreamBufCap = 64 * 1024 * 1024
 
 // newStreamBuffer creates a ready-to-use streamBuffer.
 func newStreamBuffer() *streamBuffer {
-	sb := &streamBuffer{
-		data: make([]byte, 0, initialStreamBufCap),
+	return &streamBuffer{
+		ch:    make(chan []byte, 16), // buffer 16 chunks ahead
+		accum: make([]byte, 0, initialStreamBufCap),
 	}
-	sb.cond = sync.NewCond(&sb.mu)
-	return sb
 }
 
-// Write appends p to the buffer and wakes any blocked reader.
-// Safe to call from a different goroutine than Read.
+// Write sends a chunk to the reader channel and accumulates for cache.
+// Safe to call from a different goroutine than Read — they never share
+// a mutex on the hot path.
 func (sb *streamBuffer) Write(p []byte) (int, error) {
+	// Make a copy — the caller may reuse the buffer.
+	chunk := make([]byte, len(p))
+	copy(chunk, p)
+
+	// Send to reader (non-blocking if channel has space).
+	sb.ch <- chunk
+
+	// Accumulate for Bytes() / playlist cache.
 	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	sb.data = append(sb.data, p...)
-	sb.cond.Broadcast()
+	sb.accum = append(sb.accum, chunk...)
+	sb.mu.Unlock()
+
 	return len(p), nil
 }
 
-// Read reads from the buffer, blocking if the reader has caught up to
-// the writer. Returns io.EOF when Complete has been called and all data
-// is consumed. Returns the error from Abort if set.
+// Read implements io.Reader by consuming chunks from the channel.
+// Blocks if no data is available yet. Returns io.EOF when Complete
+// has been called and all chunks are consumed.
 func (sb *streamBuffer) Read(p []byte) (int, error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	for sb.readPos >= len(sb.data) {
-		// No unread data available.
-		if sb.err != nil {
-			return 0, sb.err
-		}
-		if sb.complete {
-			return 0, io.EOF
-		}
-		// Block until writer adds data, completes, or aborts.
-		sb.cond.Wait()
+	// Drain leftover from previous chunk.
+	if len(sb.current) > 0 {
+		n := copy(p, sb.current)
+		sb.current = sb.current[n:]
+		return n, nil
 	}
 
-	n := copy(p, sb.data[sb.readPos:])
-	sb.readPos += n
+	// Receive next chunk from channel.
+	chunk, ok := <-sb.ch
+	if !ok {
+		// Channel closed — check for error or EOF.
+		sb.mu.Lock()
+		err := sb.err
+		sb.mu.Unlock()
+		if err != nil {
+			return 0, err
+		}
+		return 0, io.EOF
+	}
+
+	n := copy(p, chunk)
+	if n < len(chunk) {
+		sb.current = chunk[n:]
+	}
 	return n, nil
 }
 
-// Complete marks the buffer as finished (filemark hit). After this,
-// Read will return io.EOF once all buffered data is consumed.
-// No more Write calls should be made after Complete.
+// Complete marks the buffer as finished (filemark hit). Closes the
+// channel so Read returns io.EOF after consuming remaining chunks.
 func (sb *streamBuffer) Complete() {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
+	if sb.closed {
+		return
+	}
 	sb.complete = true
-	sb.cond.Broadcast()
+	sb.closed = true
+	close(sb.ch)
 }
 
-// Abort marks the buffer with an error (e.g., tape read failure).
-// Any blocked or future Read will return this error.
+// Abort marks the buffer with an error. Closes the channel so Read
+// returns the error after consuming remaining chunks.
 func (sb *streamBuffer) Abort(err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
+	if sb.closed {
+		return
+	}
 	sb.err = err
-	sb.cond.Broadcast()
+	sb.closed = true
+	close(sb.ch)
 }
 
-// Bytes returns the full buffered contents for track replay.
-// Must only be called after [Complete] — panics otherwise to catch
-// misuse during development.
+// Bytes returns the accumulated data for playlist cache.
+// Must only be called after Complete — panics otherwise.
 func (sb *streamBuffer) Bytes() []byte {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	if !sb.complete {
 		panic("streamBuffer.Bytes() called before Complete()")
 	}
-	return sb.data
+	return sb.accum
 }
 
-// Len returns the current number of bytes written to the buffer.
+// Len returns the current accumulated data size.
 func (sb *streamBuffer) Len() int {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	return len(sb.data)
+	return len(sb.accum)
 }
 
 // IsComplete reports whether the buffer has been marked complete.
