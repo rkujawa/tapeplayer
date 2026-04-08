@@ -127,12 +127,11 @@ func main() {
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
 
-	// Read buffer: 2× block size for multi-block reads. One SCSI READ(6)
-	// fetches 2 blocks per command, halving per-command overhead while
-	// staying within drive/target transfer limits.
-	// For variable-block: 1MB covers reasonable record sizes.
-	readBuf := 1024 * 1024
-	if *bs > 0 && int(*bs) > readBuf {
+	// Read buffer matches block size. Multi-block reads (>1 block per
+	// SCSI command) failed on the LTO-4 test drive. Single-block reads
+	// with GOGC=400 and no pipeline provide stable playback.
+	readBuf := 0 // default 256KB for variable-block
+	if *bs > 0 {
 		readBuf = int(*bs)
 	}
 	p := player.New(drive, logger, readBuf, 0) // 0 = default 500MB cache
