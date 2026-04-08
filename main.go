@@ -83,7 +83,9 @@ func main() {
 	var opts []uiscsi.Option
 	opts = append(opts, uiscsi.WithTarget(*target))
 	opts = append(opts, uiscsi.WithLogger(sessLogger))
-	opts = append(opts, uiscsi.WithMaxRecvDataSegmentLength(524288)) // 512KB = 1 PDU per block
+	// Don't override MRDSL — the default 8192 gives best throughput.
+	// Larger PDUs (256-512KB) cause larger per-PDU allocations in
+	// ReadRawPDU and worse GC behavior. Many small PDUs stream better.
 	if *initiatorName != "" {
 		opts = append(opts, uiscsi.WithInitiatorName(*initiatorName))
 	}
@@ -98,7 +100,6 @@ func main() {
 	// Open tape drive.
 	var tapeOpts []tape.Option
 	tapeOpts = append(tapeOpts, tape.WithLogger(logger))
-	tapeOpts = append(tapeOpts, tape.WithReadAhead(4))
 	if *bs > 0 {
 		tapeOpts = append(tapeOpts, tape.WithBlockSize(uint32(*bs)))
 	} else {
