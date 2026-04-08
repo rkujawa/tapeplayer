@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"time"
 
@@ -466,7 +467,17 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 		return
 	}
 
-	// Decode loop.
+	// Decode loop with instrumentation.
+	var (
+		frames       int
+		totalDecode  time.Duration
+		totalWrite   time.Duration
+		maxDecode    time.Duration
+		maxWrite     time.Duration
+		lastDiag     = time.Now()
+		prevUnderruns int
+	)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -479,10 +490,15 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 			continue
 		}
 
+		t0 := time.Now()
 		samples, err := dec.nextFrame()
+		decodeTime := time.Since(t0)
+
 		if err != nil {
 			if err.Error() == "EOF" {
-				p.logger.Debug("decoder: track complete", "index", index)
+				p.logger.Debug("decoder: track complete", "index", index,
+					"frames", frames,
+					"underruns", p.audioDev.ring.Underruns())
 				for p.audioDev.ring.Available() > 0 {
 					time.Sleep(10 * time.Millisecond)
 				}
@@ -496,9 +512,50 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 		}
 
 		if len(samples) > 0 {
+			t1 := time.Now()
 			if _, err := p.audioDev.ring.Write(samples); err != nil {
 				p.logger.Debug("decoder: ring buffer closed, stopping")
 				return
+			}
+			writeTime := time.Since(t1)
+
+			frames++
+			totalDecode += decodeTime
+			totalWrite += writeTime
+			if decodeTime > maxDecode {
+				maxDecode = decodeTime
+			}
+			if writeTime > maxWrite {
+				maxWrite = writeTime
+			}
+
+			// Periodic diagnostics every 2 seconds.
+			if time.Since(lastDiag) >= 2*time.Second {
+				underruns := p.audioDev.ring.Underruns()
+				newUnderruns := underruns - prevUnderruns
+				prevUnderruns = underruns
+
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+
+				p.logger.Debug("decoder: diag",
+					"frames", frames,
+					"avgDecode", totalDecode/time.Duration(frames),
+					"maxDecode", maxDecode,
+					"avgWrite", totalWrite/time.Duration(frames),
+					"maxWrite", maxWrite,
+					"ringAvail", p.audioDev.ring.Available(),
+					"ringSize", ringSize(p.audioDev),
+					"underruns", newUnderruns,
+					"totalUnderruns", underruns,
+					"heapMB", ms.HeapAlloc/1024/1024,
+					"gcPauses", ms.NumGC,
+					"lastGCPause", ms.PauseNs[(ms.NumGC+255)%256],
+				)
+
+				lastDiag = time.Now()
+				maxDecode = 0
+				maxWrite = 0
 			}
 
 			// Throttle progress updates to every 200ms.

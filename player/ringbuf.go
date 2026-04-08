@@ -17,7 +17,8 @@ type ringBuffer struct {
 	rpos   int  // read position
 	wpos   int  // write position
 	used   int  // bytes currently buffered
-	closed bool // true after Close — Write returns immediately
+	closed    bool // true after Close — Write returns immediately
+	underruns int  // count of Read calls that got silence (for diagnostics)
 }
 
 // newRingBuffer creates a ring buffer with the given capacity in bytes.
@@ -84,6 +85,7 @@ func (rb *ringBuffer) Read(p []byte) int {
 		for i := actual; i < n; i++ {
 			p[i] = 0
 		}
+		rb.underruns++
 		// Wake writer — space now available.
 		rb.cond.Signal()
 		return actual
@@ -126,6 +128,13 @@ func (rb *ringBuffer) Reset() {
 	rb.wpos = 0
 	rb.used = 0
 	rb.closed = false
+}
+
+// Underruns returns the number of Read calls that returned silence.
+func (rb *ringBuffer) Underruns() int {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.underruns
 }
 
 // Close signals writers to stop. Any blocked Write returns io.EOF.

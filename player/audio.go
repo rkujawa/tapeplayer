@@ -98,6 +98,14 @@ func (ad *audioDevice) resume() {
 	ad.device.Start()
 }
 
+// ringSize returns the ring buffer total capacity.
+func ringSize(ad *audioDevice) int {
+	if ad == nil || ad.ring == nil {
+		return 0
+	}
+	return ad.ring.size
+}
+
 // close releases all audio resources.
 func (ad *audioDevice) close() {
 	ad.device.Uninit()
