@@ -23,6 +23,7 @@ type Player struct {
 	prog     *tea.Program
 	readBuf  int       // tape read buffer size in bytes
 	playlist *Playlist // discovered files with LRU cache
+	msgCh    chan tea.Msg // buffered UI message channel (single drainer)
 
 	mu        sync.Mutex
 	wg        sync.WaitGroup
@@ -33,6 +34,8 @@ type Player struct {
 	decoder   *flacDecoder
 	startTime time.Time
 	bytesRead int64
+	lastTapeStatus time.Time // throttle TapeStatusMsg
+	lastProgress   time.Time // throttle PlaybackProgressMsg
 }
 
 // New creates a Player. readBufSize sets the tape read buffer (0 = 256KB).
@@ -46,13 +49,20 @@ func New(drive *tape.Drive, logger *slog.Logger, readBufSize int, cacheLimit int
 		logger:   logger,
 		readBuf:  readBufSize,
 		playlist: NewPlaylist(cacheLimit),
+		msgCh:    make(chan tea.Msg, 64),
 		state:    Stopped,
 	}
 }
 
 // SetProgram sets the bubbletea program for sending UI messages.
+// Starts a single drainer goroutine to forward messages to bubbletea.
 func (p *Player) SetProgram(prog *tea.Program) {
 	p.prog = prog
+	go func() {
+		for msg := range p.msgCh {
+			prog.Send(msg)
+		}
+	}()
 }
 
 // Playlist returns the playlist for UI queries.
@@ -75,8 +85,10 @@ func (p *Player) setState(s State) {
 }
 
 func (p *Player) sendMsg(msg tea.Msg) {
-	if p.prog != nil {
-		go p.prog.Send(msg)
+	select {
+	case p.msgCh <- msg:
+	default:
+		// Drop if full — UI status updates are best-effort.
 	}
 }
 
@@ -378,18 +390,22 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 			br := p.bytesRead
 			p.mu.Unlock()
 
-			elapsed := time.Since(readStart).Seconds()
-			rate := 0.0
-			if elapsed > 0 {
-				rate = float64(br) / elapsed / 1e6
+			// Throttle TapeStatusMsg to every 200ms.
+			if time.Since(p.lastTapeStatus) >= 200*time.Millisecond {
+				p.lastTapeStatus = time.Now()
+				elapsed := time.Since(readStart).Seconds()
+				rate := 0.0
+				if elapsed > 0 {
+					rate = float64(br) / elapsed / 1e6
+				}
+				p.sendMsg(TapeStatusMsg{Status: TapeStatus{
+					FileNumber:  index + 1,
+					BytesRead:   br,
+					ReadRate:    rate,
+					BufferBytes: sb.Len(),
+					Complete:    false,
+				}})
 			}
-			p.sendMsg(TapeStatusMsg{Status: TapeStatus{
-				FileNumber:  index + 1,
-				BytesRead:   br,
-				ReadRate:    rate,
-				BufferBytes: sb.Len(),
-				Complete:    false,
-			}})
 		}
 
 		// Start decoder once we have data. Launch exactly once.
@@ -485,11 +501,14 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 				return
 			}
 
-			pos := dec.position()
-			p.sendMsg(PlaybackProgressMsg{
-				Position: pos,
-				Duration: info.Duration(),
-			})
+			// Throttle progress updates to every 200ms.
+			if time.Since(p.lastProgress) >= 200*time.Millisecond {
+				p.lastProgress = time.Now()
+				p.sendMsg(PlaybackProgressMsg{
+					Position: dec.position(),
+					Duration: info.Duration(),
+				})
+			}
 		}
 	}
 }
