@@ -39,7 +39,11 @@ type streamBuffer struct {
 	notify chan struct{}
 }
 
-const initialStreamBufCap = 64 * 1024 * 1024
+// Pre-allocate 512MB. This avoids reallocations during tape reading
+// (which hold the mutex and block the decoder). 512MB covers any
+// single FLAC file. The memory is virtual until touched — the OS
+// only allocates physical pages as data is written.
+const initialStreamBufCap = 512 * 1024 * 1024
 
 // newStreamBufferFrom creates a pre-filled, completed streamBuffer.
 func newStreamBufferFrom(data []byte) *streamBuffer {
