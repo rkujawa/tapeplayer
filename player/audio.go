@@ -32,9 +32,11 @@ func newAudioDevice(sampleRate uint32, channels uint8, bitsPerSample uint8, logg
 		format = malgo.FormatS32
 	}
 
-	// Ring buffer: ~2 seconds of audio.
+	// Ring buffer: ~10 seconds of audio. Large buffer absorbs Go
+	// scheduler latency and GC pauses that can delay the decode
+	// goroutine's cond.Wait wakeup after the ring drains.
 	bytesPerSample := malgo.SampleSizeInBytes(format)
-	ringSize := int(sampleRate) * int(channels) * int(bytesPerSample) * 2
+	ringSize := int(sampleRate) * int(channels) * int(bytesPerSample) * 10
 	ring := newRingBuffer(ringSize)
 
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Playback)
