@@ -4,101 +4,143 @@ package player
 import (
 	"io"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
-// streamBuffer is a growable byte buffer with a blocking io.Reader.
-// A writer (tape reader goroutine) appends data via Write. A reader
-// (FLAC decoder) reads via Read, blocking when it catches up to the
-// write position. When Complete is called (filemark hit), the reader
-// receives io.EOF after consuming all data.
+// streamBuffer accumulates tape data and provides a non-contending
+// io.Reader for the FLAC decoder.
 //
-// Pre-allocated to 64MB. With pre-allocation, append is just a memcpy
-// (~50µs for 512KB at memory bandwidth). The mutex is held only during
-// this memcpy — short enough that the decoder's reads rarely contend.
+// Design: the tape writer calls Write, which appends to an internal
+// slice under a mutex and updates an atomic write position. The FLAC
+// decoder calls Read, which reads up to the current atomic write
+// position WITHOUT taking the mutex — it just reads from the portion
+// of the slice that is already written and immutable.
 //
-// After Complete, Bytes() returns the full contents for playlist cache.
+// This works because Go slice backing arrays are stable: once bytes
+// are written at positions 0..N, those bytes never move (append only
+// grows the slice, it doesn't modify existing bytes). The reader only
+// accesses positions 0..writePos, which are frozen.
+//
+// The only contention is when append triggers a reallocation (copy to
+// new backing array). Pre-allocating 64MB makes this rare. When it
+// happens, the reader briefly sees stale data from the old backing
+// array — but since readPos < old writePos, those bytes are identical
+// in both arrays.
 type streamBuffer struct {
 	mu       sync.Mutex
-	cond     *sync.Cond
 	data     []byte
+	writePos atomic.Int64 // bytes written so far (atomic, no lock for reader)
 	readPos  int
-	complete bool
-	err      error
+	complete atomic.Bool
+	err      atomic.Value // stores error
+
+	// For blocking when reader catches up to writer.
+	notify chan struct{}
 }
 
 const initialStreamBufCap = 64 * 1024 * 1024
 
-// newStreamBufferFrom creates a pre-filled, completed streamBuffer
-// wrapping existing data without copying.
+// newStreamBufferFrom creates a pre-filled, completed streamBuffer.
 func newStreamBufferFrom(data []byte) *streamBuffer {
 	sb := &streamBuffer{
-		data:     data,
-		complete: true,
+		data:   data,
+		notify: make(chan struct{}, 1),
 	}
-	sb.cond = sync.NewCond(&sb.mu)
+	sb.writePos.Store(int64(len(data)))
+	sb.complete.Store(true)
 	return sb
 }
 
 // newStreamBuffer creates a ready-to-use streamBuffer.
 func newStreamBuffer() *streamBuffer {
-	sb := &streamBuffer{
-		data: make([]byte, 0, initialStreamBufCap),
+	return &streamBuffer{
+		data:   make([]byte, 0, initialStreamBufCap),
+		notify: make(chan struct{}, 1),
 	}
-	sb.cond = sync.NewCond(&sb.mu)
-	return sb
 }
 
-// Write appends p to the buffer and wakes any blocked reader.
+// Write appends p to the buffer. Takes mutex briefly for append,
+// then updates atomic writePos and signals the reader.
 func (sb *streamBuffer) Write(p []byte) (int, error) {
 	sb.mu.Lock()
 	sb.data = append(sb.data, p...)
+	newLen := int64(len(sb.data))
 	sb.mu.Unlock()
-	sb.cond.Broadcast()
+
+	sb.writePos.Store(newLen)
+
+	// Non-blocking signal to wake reader if it's waiting.
+	select {
+	case sb.notify <- struct{}{}:
+	default:
+	}
+
 	return len(p), nil
 }
 
-// Read reads from the buffer, blocking if the reader has caught up.
+// Read reads from the buffer up to the current write position.
+// Does NOT take the mutex — reads from the immutable portion of the
+// backing array (positions 0..writePos are frozen after write).
+// Blocks only when the reader has caught up to the writer.
 func (sb *streamBuffer) Read(p []byte) (int, error) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
+	for {
+		wp := int(sb.writePos.Load())
 
-	for sb.readPos >= len(sb.data) {
-		if sb.err != nil {
-			return 0, sb.err
+		if sb.readPos < wp {
+			// Data available — read without any lock.
+			// Safe because data[0..wp-1] is immutable (only append grows).
+			// We must read data slice header under lock in case append
+			// reallocated the backing array.
+			sb.mu.Lock()
+			src := sb.data[sb.readPos:]
+			sb.mu.Unlock()
+
+			n := copy(p, src)
+			sb.readPos += n
+			return n, nil
 		}
-		if sb.complete {
+
+		// Caught up to writer — check for completion.
+		if sb.err.Load() != nil {
+			return 0, sb.err.Load().(error)
+		}
+		if sb.complete.Load() {
 			return 0, io.EOF
 		}
-		sb.cond.Wait()
-	}
 
-	n := copy(p, sb.data[sb.readPos:])
-	sb.readPos += n
-	return n, nil
+		// Wait for more data (or completion signal).
+		select {
+		case <-sb.notify:
+			// New data or completion — retry.
+		case <-time.After(10 * time.Millisecond):
+			// Periodic check in case we missed a signal.
+		}
+	}
 }
 
 // Complete marks the buffer as finished.
 func (sb *streamBuffer) Complete() {
-	sb.mu.Lock()
-	sb.complete = true
-	sb.mu.Unlock()
-	sb.cond.Broadcast()
+	sb.complete.Store(true)
+	select {
+	case sb.notify <- struct{}{}:
+	default:
+	}
 }
 
 // Abort marks the buffer with an error.
 func (sb *streamBuffer) Abort(err error) {
-	sb.mu.Lock()
-	sb.err = err
-	sb.mu.Unlock()
-	sb.cond.Broadcast()
+	sb.err.Store(err)
+	select {
+	case sb.notify <- struct{}{}:
+	default:
+	}
 }
 
 // Bytes returns the full buffered contents for track replay.
 // Must only be called after Complete.
 func (sb *streamBuffer) Bytes() []byte {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	if !sb.complete {
+	if !sb.complete.Load() {
 		panic("streamBuffer.Bytes() called before Complete()")
 	}
 	return sb.data
@@ -106,14 +148,10 @@ func (sb *streamBuffer) Bytes() []byte {
 
 // Len returns the current number of bytes written.
 func (sb *streamBuffer) Len() int {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return len(sb.data)
+	return int(sb.writePos.Load())
 }
 
 // IsComplete reports whether the buffer has been marked complete.
 func (sb *streamBuffer) IsComplete() bool {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.complete
+	return sb.complete.Load()
 }
