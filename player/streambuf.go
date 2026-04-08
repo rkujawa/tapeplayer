@@ -36,9 +36,16 @@ func newStreamBufferFrom(data []byte) *streamBuffer {
 	return sb
 }
 
+// Initial streamBuffer capacity. Pre-allocating avoids costly realloc+copy
+// of the entire buffer as it grows. 64MB covers most FLAC files; for larger
+// files, append grows by doubling (at most one realloc per doubling).
+const initialStreamBufCap = 64 * 1024 * 1024
+
 // newStreamBuffer creates a ready-to-use streamBuffer.
 func newStreamBuffer() *streamBuffer {
-	sb := &streamBuffer{}
+	sb := &streamBuffer{
+		data: make([]byte, 0, initialStreamBufCap),
+	}
 	sb.cond = sync.NewCond(&sb.mu)
 	return sb
 }
