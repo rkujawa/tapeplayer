@@ -43,7 +43,11 @@ func main() {
 	}
 
 	// Logger: debug to file if specified, otherwise discard.
+	// Two loggers: one for tapeplayer (DEBUG), one for iSCSI session
+	// (INFO). The session generates ~285 DEBUG entries/sec (per-PDU
+	// logging) which causes I/O contention with the decode path.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	sessLogger := logger
 	if *debugFile != "" {
 		f, err := os.Create(*debugFile)
 		if err != nil {
@@ -52,6 +56,7 @@ func main() {
 		}
 		defer f.Close()
 		logger = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		sessLogger = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -70,7 +75,7 @@ func main() {
 	// Connect to iSCSI target.
 	var opts []uiscsi.Option
 	opts = append(opts, uiscsi.WithTarget(*target))
-	opts = append(opts, uiscsi.WithLogger(logger))
+	opts = append(opts, uiscsi.WithLogger(sessLogger))
 	opts = append(opts, uiscsi.WithMaxRecvDataSegmentLength(262144)) // 256KB PDUs for tape throughput
 	if *initiatorName != "" {
 		opts = append(opts, uiscsi.WithInitiatorName(*initiatorName))
