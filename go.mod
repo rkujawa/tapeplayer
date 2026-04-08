@@ -3,17 +3,16 @@ module github.com/rkujawa/tapeplayer
 go 1.25
 
 // Development replace directives — remove before publishing.
-replace github.com/rkujawa/uiscsi => ../uiscsi-repo
-
-replace github.com/rkujawa/uiscsi-tape => ../uiscsi-tape
+//replace github.com/rkujawa/uiscsi => ../uiscsi-repo
+//replace github.com/rkujawa/uiscsi-tape => ../uiscsi-tape
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/gen2brain/malgo v0.11.24
 	github.com/mewkiz/flac v1.0.13
-	github.com/rkujawa/uiscsi v1.1.2
-	github.com/rkujawa/uiscsi-tape v0.0.0-00010101000000-000000000000
+	github.com/rkujawa/uiscsi v1.2.0
+	github.com/rkujawa/uiscsi-tape v0.2.0
 )
 
 require (
