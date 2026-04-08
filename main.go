@@ -96,6 +96,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: open tape LUN %d: %v\n", *lun, err)
 		os.Exit(2)
 	}
+	defer drive.Close(ctx)
 
 	// Enable hardware decompression if requested (default: yes).
 	if *decompress {

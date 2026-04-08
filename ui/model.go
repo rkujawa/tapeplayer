@@ -13,7 +13,7 @@ import (
 
 // Model is the bubbletea model for the tapeplayer TUI.
 type Model struct {
-	player          *player.Player
+	player          PlayerAPI
 	ctx             context.Context
 	state           player.State
 	track           player.TrackInfo
@@ -29,7 +29,7 @@ type Model struct {
 }
 
 // New creates the TUI model.
-func New(p *player.Player, ctx context.Context, driveInfo string) Model {
+func New(p PlayerAPI, ctx context.Context, driveInfo string) Model {
 	return Model{
 		player:          p,
 		ctx:             ctx,
