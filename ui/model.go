@@ -23,6 +23,7 @@ type Model struct {
 	lastErr         string
 	quitting        bool
 	driveInfo       string
+	audioDevice     string
 	playlist        []player.PlaylistEntry
 	playlistCurrent int
 	playlistEOT     bool
@@ -68,6 +69,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case player.TapeStatusMsg:
 		m.tape = msg.Status
+		return m, nil
+
+	case player.AudioInfoMsg:
+		m.audioDevice = msg.Info.DeviceName
 		return m, nil
 
 	case player.PlaybackProgressMsg:
@@ -137,7 +142,11 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Title.
-	b.WriteString(titleStyle.Render("tapeplayer") + "  " + tapeStatusStyle.Render(m.driveInfo) + "\n\n")
+	header := titleStyle.Render("tapeplayer") + "  " + tapeStatusStyle.Render(m.driveInfo)
+	if m.audioDevice != "" {
+		header += "  " + tapeStatusStyle.Render("▸ "+m.audioDevice)
+	}
+	b.WriteString(header + "\n\n")
 
 	// State + time.
 	stateIcon, stateStr := m.renderState()

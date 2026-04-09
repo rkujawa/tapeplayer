@@ -93,5 +93,16 @@ type PlaylistUpdateMsg struct {
 	EOT     bool
 }
 
+// AudioDeviceInfo holds the negotiated audio output configuration.
+type AudioDeviceInfo struct {
+	DeviceName string // e.g., "Built-in Output", "default"
+	SampleRate uint32 // negotiated sample rate
+	Format     string // e.g., "S24LE", "S16LE"
+	Channels   uint32 // number of output channels
+}
+
+// AudioInfoMsg carries audio device information after initialization.
+type AudioInfoMsg struct{ Info AudioDeviceInfo }
+
 // TickMsg is sent periodically to update the UI.
 type TickMsg struct{}

@@ -27,13 +27,18 @@ import (
 // happens, the reader briefly sees stale data from the old backing
 // array — but since readPos < old writePos, those bytes are identical
 // in both arrays.
+// wrappedError is a consistent concrete type for atomic.Value storage.
+// atomic.Value panics if different concrete error types are stored;
+// wrapping in a struct avoids this.
+type wrappedError struct{ err error }
+
 type streamBuffer struct {
 	mu       sync.Mutex
 	data     []byte
 	writePos atomic.Int64 // bytes written so far (atomic, no lock for reader)
 	readPos  int
 	complete atomic.Bool
-	err      atomic.Value // stores error
+	err      atomic.Value // stores *wrappedError
 
 	// For blocking when reader catches up to writer.
 	notify chan struct{}
@@ -106,8 +111,8 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 		}
 
 		// Caught up to writer — check for completion.
-		if sb.err.Load() != nil {
-			return 0, sb.err.Load().(error)
+		if v := sb.err.Load(); v != nil {
+			return 0, v.(*wrappedError).err
 		}
 		if sb.complete.Load() {
 			return 0, io.EOF
@@ -134,7 +139,7 @@ func (sb *streamBuffer) Complete() {
 
 // Abort marks the buffer with an error.
 func (sb *streamBuffer) Abort(err error) {
-	sb.err.Store(err)
+	sb.err.Store(&wrappedError{err: err})
 	select {
 	case sb.notify <- struct{}{}:
 	default:

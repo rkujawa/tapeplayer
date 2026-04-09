@@ -8,10 +8,11 @@ import (
 
 // audioDevice wraps a malgo playback device with a ring buffer.
 type audioDevice struct {
-	ctx    *malgo.AllocatedContext
-	device *malgo.Device
-	ring   *ringBuffer
-	logger *slog.Logger
+	ctx        *malgo.AllocatedContext
+	device     *malgo.Device
+	ring       *ringBuffer
+	logger     *slog.Logger
+	deviceName string // name of the output device
 }
 
 // newAudioDevice initializes a malgo playback device.
@@ -47,10 +48,26 @@ func newAudioDevice(sampleRate uint32, channels uint8, bitsPerSample uint8, logg
 	deviceConfig.Periods = 4               // 4 periods = ~46ms total buffer
 	deviceConfig.Alsa.NoMMap = 1
 
+	// Query the default playback device name.
+	devName := "Unknown"
+	if devs, err := ctx.Devices(malgo.Playback); err == nil {
+		for _, d := range devs {
+			if d.IsDefault != 0 {
+				devName = d.Name()
+				break
+			}
+		}
+		// If no default flagged, use the first device.
+		if devName == "Unknown" && len(devs) > 0 {
+			devName = devs[0].Name()
+		}
+	}
+
 	ad := &audioDevice{
-		ctx:    ctx,
-		ring:   ring,
-		logger: logger,
+		ctx:        ctx,
+		ring:       ring,
+		logger:     logger,
+		deviceName: devName,
 	}
 
 	callbacks := malgo.DeviceCallbacks{
@@ -112,4 +129,27 @@ func ringSize(ad *audioDevice) int {
 func (ad *audioDevice) close() {
 	ad.device.Uninit()
 	ad.ctx.Free()
+}
+
+// audioInfo returns the negotiated audio device configuration.
+func (ad *audioDevice) audioInfo() AudioDeviceInfo {
+	format := "unknown"
+	switch ad.device.PlaybackFormat() {
+	case malgo.FormatU8:
+		format = "U8"
+	case malgo.FormatS16:
+		format = "S16LE"
+	case malgo.FormatS24:
+		format = "S24LE"
+	case malgo.FormatS32:
+		format = "S32LE"
+	case malgo.FormatF32:
+		format = "F32LE"
+	}
+	return AudioDeviceInfo{
+		DeviceName: ad.deviceName,
+		SampleRate: ad.device.SampleRate(),
+		Format:     format,
+		Channels:   ad.device.PlaybackChannels(),
+	}
 }

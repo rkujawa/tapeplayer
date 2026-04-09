@@ -523,6 +523,13 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 			return
 		}
 		p.audioDev = ad
+		ai := ad.audioInfo()
+		p.logger.Debug("audio: device initialized",
+			"device", ai.DeviceName,
+			"sampleRate", ai.SampleRate,
+			"format", ai.Format,
+			"channels", ai.Channels)
+		p.sendMsg(AudioInfoMsg{Info: ai})
 	}
 
 	p.audioDev.reset()
