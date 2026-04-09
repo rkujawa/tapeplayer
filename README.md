@@ -4,6 +4,8 @@ A TUI FLAC audio player for iSCSI-attached tape drives. Plays FLAC files directl
 
 Built on [uiscsi](https://github.com/rkujawa/uiscsi) and [uiscsi-tape](https://github.com/rkujawa/uiscsi-tape).
 
+![tapeplayer playing from a DDS-4 drive](screenshot.png)
+
 ## Features
 
 - **Tape deck TUI** -- play/pause, stop, forward, back, rewind with bubbletea interface
@@ -58,6 +60,24 @@ tapeplayer -portal 192.168.1.100:3260 -target iqn.example:tape -lun 2
 | b / Left | Previous track (< 3s) or restart current (always from cache) |
 | r | Rewind tape to beginning |
 | q / Ctrl+C | Quit (second Ctrl+C force-quits) |
+
+## Why This Works
+
+Playing audio from tape over a network sounds impractical, but the math is comfortable. FLAC compresses audio to roughly 50-70% of PCM size. The resulting data rates are modest:
+
+| Format | PCM bitrate | FLAC on tape | Tape headroom |
+|--------|-------------|-------------|---------------|
+| CD (16-bit, 44.1 kHz, stereo) | 1.4 Mbit/s | ~100-120 KB/s | DDS-4: 50x, LTO: 1000x |
+| Hi-res (24-bit, 96 kHz, stereo) | 4.6 Mbit/s | ~300-400 KB/s | DDS-4: 15x, LTO: 300x |
+| Hi-res (24-bit, 192 kHz, stereo) | 9.2 Mbit/s | ~600-800 KB/s | DDS-4: 8x, LTO: 150x |
+
+Even the slowest tested drive (DDS-4 at ~6 MB/s) reads 8x faster than the highest-resolution FLAC needs. LTO drives are orders of magnitude faster. The tape always fills the buffer faster than the decoder drains it. Drives slower than ~1 MB/s (e.g. QIC, early DDS-1) may not sustain real-time playback of hi-res FLAC and are not supported.
+
+The real challenges are mechanical, not bandwidth:
+
+- **Startup latency.** The tape must physically spool to the read position. A streamBuffer lets playback begin from partially buffered data, so the user hears audio within seconds even on DDS.
+- **Track skipping.** Tape is sequential. Forward skip reads through the current file to find the next filemark. Backward skip requires rewind. An LRU cache (500 MB default) makes replaying already-seen tracks instant.
+- **iSCSI overhead.** Network RTT (~5 ms per SCSI command) is negligible at these data rates. A single 512 KB tape record takes ~85 ms to transfer on DDS-4 -- the 5 ms RTT is lost in the noise.
 
 ## Architecture
 

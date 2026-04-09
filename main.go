@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/rkujawa/uiscsi"
 	tape "github.com/rkujawa/uiscsi-tape"
@@ -111,7 +112,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: open tape LUN %d: %v\n", *lun, err)
 		os.Exit(2)
 	}
-	defer drive.Close(ctx)
+	defer func() {
+		// Use a fresh context — the signal handler cancels ctx on first
+		// Ctrl+C, but Close needs to send MODE SELECT to restore the drive.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		drive.Close(cleanupCtx)
+	}()
 
 	// Enable hardware decompression if requested (default: yes).
 	if *decompress {
