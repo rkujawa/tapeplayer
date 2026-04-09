@@ -12,7 +12,9 @@ type PlaylistEntry struct {
 	Index    int
 	Info     TrackInfo // FLAC metadata (zero value until decoded)
 	Size     int64     // total FLAC data size in bytes
-	Cached   bool      // true if data is in memory (for UI display)
+	Cached   bool      // true if complete data is in memory (for UI)
+	Partial  bool      // true if data is partial (interrupted read)
+	complete bool      // true if read to filemark (full file)
 	data     []byte    // cached FLAC data (nil if evicted by LRU)
 	lastUsed time.Time // last time data was accessed (for LRU)
 }
@@ -54,6 +56,32 @@ func (pl *Playlist) Add(data []byte, info TrackInfo) int {
 		Index:    idx,
 		Info:     info,
 		Size:     int64(len(data)),
+		complete: true,
+		data:     data,
+		lastUsed: time.Now(),
+	}
+	pl.entries = append(pl.entries, entry)
+	pl.cacheUsed += entry.Size
+	pl.tapeHead = idx + 1
+
+	pl.evictLocked()
+
+	return idx
+}
+
+// AddPartial appends a partially read file. The data is cached for
+// decoder use (e.g., Back restart) but marked incomplete — the player
+// must re-read from tape for the full file.
+func (pl *Playlist) AddPartial(data []byte, info TrackInfo) int {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+
+	idx := len(pl.entries)
+	entry := &PlaylistEntry{
+		Index:    idx,
+		Info:     info,
+		Size:     int64(len(data)),
+		complete: false,
 		data:     data,
 		lastUsed: time.Now(),
 	}
@@ -82,6 +110,7 @@ func (pl *Playlist) Recache(index int, data []byte) {
 	}
 	e.data = data
 	e.Size = int64(len(data))
+	e.complete = true
 	e.lastUsed = time.Now()
 	pl.cacheUsed += e.Size
 	pl.evictLocked()
@@ -132,14 +161,25 @@ func (pl *Playlist) IsEOT() bool {
 	return pl.eot
 }
 
-// IsCached returns true if the entry at index has data in memory.
+// IsCached returns true if the entry at index has complete data in memory.
+// Partial entries (interrupted reads) return false — they need re-reading.
 func (pl *Playlist) IsCached(index int) bool {
 	pl.mu.Lock()
 	defer pl.mu.Unlock()
 	if index < 0 || index >= len(pl.entries) {
 		return false
 	}
-	return pl.entries[index].data != nil
+	return pl.entries[index].data != nil && pl.entries[index].complete
+}
+
+// IsPartial returns true if the entry has data but was not fully read.
+func (pl *Playlist) IsPartial(index int) bool {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if index < 0 || index >= len(pl.entries) {
+		return false
+	}
+	return pl.entries[index].data != nil && !pl.entries[index].complete
 }
 
 // Data returns the cached FLAC data for the entry at index.
@@ -174,10 +214,11 @@ func (pl *Playlist) Snapshot() (entries []PlaylistEntry, current int, eot bool) 
 	out := make([]PlaylistEntry, len(pl.entries))
 	for i, e := range pl.entries {
 		out[i] = PlaylistEntry{
-			Index:  e.Index,
-			Info:   e.Info,
-			Size:   e.Size,
-			Cached: e.data != nil,
+			Index:   e.Index,
+			Info:    e.Info,
+			Size:    e.Size,
+			Cached:  e.data != nil && e.complete,
+			Partial: e.data != nil && !e.complete,
 		}
 	}
 	return out, pl.current, pl.eot

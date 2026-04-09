@@ -150,6 +150,12 @@ func (sb *streamBuffer) Bytes() []byte {
 	return sb.data
 }
 
+// ResetReader resets the read position to the beginning of the buffer.
+// The caller must ensure no concurrent Read calls are in progress.
+func (sb *streamBuffer) ResetReader() {
+	sb.readPos = 0
+}
+
 // Len returns the current number of bytes written.
 func (sb *streamBuffer) Len() int {
 	return int(sb.writePos.Load())

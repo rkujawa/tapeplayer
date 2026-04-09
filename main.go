@@ -137,6 +137,9 @@ func main() {
 	}
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
+	if code, err := drive.DensityCode(ctx); err == nil && code != 0 {
+		driveInfo += fmt.Sprintf(" [%s]", tape.DensityName(code))
+	}
 
 	// Read buffer matches block size. Multi-block reads (>1 block per
 	// SCSI command) failed on the LTO-4 test drive. Single-block reads

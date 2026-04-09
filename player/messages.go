@@ -53,9 +53,11 @@ type TapeStatus struct {
 	FileNumber  int
 	BlockPos    uint32
 	BytesRead   int64
-	ReadRate    float64 // MB/s
+	ReadRate    float64 // MB/s average since start
+	CurrentRate float64 // MB/s over last 1-second window
 	BufferBytes int
 	Complete    bool
+	Seeking     bool // true while skipping to next filemark
 }
 
 // --- Bubbletea messages sent from background goroutines ---

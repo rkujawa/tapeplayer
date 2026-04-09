@@ -173,13 +173,18 @@ func (m Model) View() string {
 
 	// Tape status.
 	tapeStr := ""
-	if m.tape.BytesRead > 0 {
+	if m.tape.Seeking {
+		tapeStr = "Tape: seeking to next track..."
+	} else if m.tape.BytesRead > 0 {
 		tapeStr = fmt.Sprintf("Tape: %.1f MB", float64(m.tape.BytesRead)/1e6)
 		if !m.tape.Complete {
 			tapeStr += " loading..."
 		}
+		if m.tape.CurrentRate > 0 {
+			tapeStr += fmt.Sprintf(" | %.1f MB/s", m.tape.CurrentRate)
+		}
 		if m.tape.ReadRate > 0 {
-			tapeStr += fmt.Sprintf(" | %.1f MB/s", m.tape.ReadRate)
+			tapeStr += fmt.Sprintf(" (avg %.1f MB/s)", m.tape.ReadRate)
 		}
 	}
 	if tapeStr != "" {
@@ -212,9 +217,12 @@ func (m Model) renderPlaylist() string {
 			title = fmt.Sprintf("Track %d", e.Index+1)
 		}
 
-		if e.Cached {
+		switch {
+		case e.Cached:
 			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, cached]", float64(e.Size)/1e6))
-		} else {
+		case e.Partial:
+			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, partial]", float64(e.Size)/1e6))
+		default:
 			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, on tape]", float64(e.Size)/1e6))
 		}
 
