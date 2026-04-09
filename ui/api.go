@@ -3,7 +3,7 @@ package ui
 import (
 	"context"
 
-	"github.com/rkujawa/tapeplayer/player"
+	"github.com/uiscsi/tapeplayer/player"
 )
 
 // PlayerAPI defines the interface between the TUI and the player engine.

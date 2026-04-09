@@ -2,7 +2,7 @@
 
 A TUI FLAC audio player for iSCSI-attached tape drives. Plays FLAC files directly from LTO, DDS, and other SCSI tape drives over iSCSI, with a tape deck-style terminal interface.
 
-Built on [uiscsi](https://github.com/rkujawa/uiscsi) and [uiscsi-tape](https://github.com/rkujawa/uiscsi-tape).
+Built on [uiscsi](https://github.com/uiscsi/uiscsi) and [uiscsi-tape](https://github.com/uiscsi/uiscsi-tape).
 
 ![tapeplayer playing from a DDS-4 drive](screenshot.png)
 
@@ -109,8 +109,8 @@ Tape Reader ──▶ streamBuffer ──┤──▶ FLAC Decoder ──▶ Rin
 
 | Library | Purpose |
 |---------|---------|
-| [uiscsi](https://github.com/rkujawa/uiscsi) | iSCSI initiator |
-| [uiscsi-tape](https://github.com/rkujawa/uiscsi-tape) | SSC tape driver |
+| [uiscsi](https://github.com/uiscsi/uiscsi) | iSCSI initiator |
+| [uiscsi-tape](https://github.com/uiscsi/uiscsi-tape) | SSC tape driver |
 | [mewkiz/flac](https://github.com/mewkiz/flac) | FLAC decoding (pure Go) |
 | [gen2brain/malgo](https://github.com/gen2brain/malgo) | Audio output (miniaudio) |
 | [charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea) | TUI framework |

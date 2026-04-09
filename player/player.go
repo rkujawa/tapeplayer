@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"runtime"
 	"sync"
 	"time"
 
-	tape "github.com/rkujawa/uiscsi-tape"
+	tape "github.com/uiscsi/uiscsi-tape"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -37,6 +38,8 @@ type Player struct {
 	bytesRead int64
 	lastTapeStatus time.Time // throttle TapeStatusMsg
 	lastProgress   time.Time // throttle PlaybackProgressMsg
+	tapeInterrupted bool     // true if tape read was aborted mid-file
+	closeOnce sync.Once
 }
 
 // New creates a Player. readBufSize sets the tape read buffer (0 = 256KB).
@@ -82,14 +85,26 @@ func (p *Player) setState(s State) {
 	p.mu.Lock()
 	p.state = s
 	p.mu.Unlock()
-	p.sendMsg(StateChangedMsg{State: s})
+	// State transitions are infrequent and must not be dropped.
+	p.msgCh <- StateChangedMsg{State: s}
 }
 
+// sendMsg sends a best-effort UI message. Dropped if the channel is full.
+// Use for throttled status updates (TapeStatusMsg, PlaybackProgressMsg).
 func (p *Player) sendMsg(msg tea.Msg) {
 	select {
 	case p.msgCh <- msg:
 	default:
-		// Drop if full — UI status updates are best-effort.
+	}
+}
+
+// sendMsgBlocking sends a lifecycle-critical message that must not be
+// dropped (TrackEndMsg, EOTMsg, ErrorMsg, TrackInfoMsg). Blocks until
+// delivered or context is cancelled.
+func (p *Player) sendMsgBlocking(ctx context.Context, msg tea.Msg) {
+	select {
+	case p.msgCh <- msg:
+	case <-ctx.Done():
 	}
 }
 
@@ -172,7 +187,7 @@ func (p *Player) Forward(ctx context.Context) {
 		nextIdx = 0
 	}
 	if p.playlist.IsEOT() && nextIdx >= p.playlist.Len() {
-		p.sendMsg(EOTMsg{})
+		p.sendMsgBlocking(ctx, EOTMsg{})
 		return
 	}
 	p.playIndex(ctx, nextIdx)
@@ -193,6 +208,7 @@ func (p *Player) Back(ctx context.Context) {
 	} else if cur >= 0 {
 		p.playIndex(ctx, cur)
 	}
+	// cur < 0: no track has been played yet; nothing to go back to.
 }
 
 // RewindTape rewinds the tape to BOT. Does NOT clear the playlist —
@@ -200,7 +216,7 @@ func (p *Player) Back(ctx context.Context) {
 func (p *Player) RewindTape(ctx context.Context) {
 	p.Stop()
 	if err := p.drive.Rewind(ctx); err != nil {
-		p.sendMsg(ErrorMsg{Err: fmt.Errorf("rewind: %w", err)})
+		p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("rewind: %w", err)})
 	}
 }
 
@@ -220,6 +236,7 @@ func (p *Player) Close() {
 		p.audioDev.close()
 		p.audioDev = nil
 	}
+	p.closeOnce.Do(func() { close(p.msgCh) })
 }
 
 func (p *Player) resume() {
@@ -292,13 +309,13 @@ func (p *Player) playIndex(ctx context.Context, index int) {
 		// re-read from tape. This is expensive.
 		p.logger.Warn("player: cache miss, rewinding tape", "index", index)
 		p.setState(Loading)
-		p.sendMsg(ErrorMsg{Err: fmt.Errorf("rewinding tape to re-read track %d (evicted from cache)", index+1)})
+		p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("rewinding tape to re-read track %d (evicted from cache)", index+1)})
 
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
 			if err := p.drive.Rewind(trackCtx); err != nil {
-				p.sendMsg(ErrorMsg{Err: fmt.Errorf("rewind: %w", err)})
+				p.sendMsgBlocking(trackCtx, ErrorMsg{Err: fmt.Errorf("rewind: %w", err)})
 				p.setState(Stopped)
 				return
 			}
@@ -325,7 +342,29 @@ func (p *Player) playIndex(ctx context.Context, index int) {
 	p.setState(Stopped)
 }
 
+// skipToFilemark advances the tape past the current file if a previous
+// read was interrupted mid-stream. Without this, the next read would
+// start from the middle of the interrupted file's data.
+func (p *Player) skipToFilemark(ctx context.Context) {
+	p.mu.Lock()
+	interrupted := p.tapeInterrupted
+	p.tapeInterrupted = false
+	p.mu.Unlock()
+	if !interrupted {
+		return
+	}
+	p.logger.Debug("tape: skipping to next filemark after interrupted read")
+	buf := make([]byte, p.readBuf)
+	for {
+		_, err := p.drive.Read(ctx, buf)
+		if err != nil {
+			return // filemark, blank check, or error — tape is at boundary
+		}
+	}
+}
+
 func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) {
+	p.skipToFilemark(ctx)
 	p.logger.Debug("tape: reading file", "index", index, "readBuf", p.readBuf)
 	buf := make([]byte, p.readBuf)
 	readStart := time.Now()
@@ -334,6 +373,9 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 		select {
 		case <-ctx.Done():
 			sb.Abort(ctx.Err())
+			p.mu.Lock()
+			p.tapeInterrupted = true
+			p.mu.Unlock()
 			return
 		default:
 		}
@@ -358,7 +400,7 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 				}
 				p.sendPlaylistUpdate()
 
-				p.sendMsg(TapeStatusMsg{Status: TapeStatus{
+				p.sendMsgBlocking(ctx, TapeStatusMsg{Status: TapeStatus{
 					FileNumber:  index + 1,
 					BytesRead:   int64(sb.Len()),
 					BufferBytes: sb.Len(),
@@ -371,7 +413,7 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 				sb.Complete()
 				p.playlist.MarkEOT()
 				p.sendPlaylistUpdate()
-				p.sendMsg(EOTMsg{})
+				p.sendMsgBlocking(ctx, EOTMsg{})
 				return
 			}
 			if errors.Is(err, tape.ErrILI) && n > 0 {
@@ -379,7 +421,13 @@ func (p *Player) readFromTape(ctx context.Context, sb *streamBuffer, index int) 
 			} else {
 				p.logger.Error("tape: read error", "err", err)
 				sb.Abort(err)
-				p.sendMsg(ErrorMsg{Err: err})
+				if ctx.Err() != nil {
+					// Context cancelled — tape is mid-file.
+					p.mu.Lock()
+					p.tapeInterrupted = true
+					p.mu.Unlock()
+				}
+				p.sendMsgBlocking(ctx, ErrorMsg{Err: err})
 				return
 			}
 		}
@@ -432,7 +480,7 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 	dec, err := newFlacDecoder(sb, p.logger)
 	if err != nil {
 		p.logger.Error("decoder: init failed", "err", err)
-		p.sendMsg(ErrorMsg{Err: fmt.Errorf("FLAC decode init: %w", err)})
+		p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("FLAC decode init: %w", err)})
 		p.setState(Stopped)
 		return
 	}
@@ -444,14 +492,14 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 
 	// Update playlist metadata.
 	p.playlist.UpdateInfo(index, info)
-	p.sendMsg(TrackInfoMsg{Info: info})
+	p.sendMsgBlocking(ctx, TrackInfoMsg{Info: info})
 	p.sendPlaylistUpdate()
 
 	// Initialize audio device if needed.
 	if p.audioDev == nil {
 		ad, err := newAudioDevice(info.SampleRate, info.Channels, info.BitsPerSample, p.logger)
 		if err != nil {
-			p.sendMsg(ErrorMsg{Err: fmt.Errorf("audio init: %w", err)})
+			p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("audio init: %w", err)})
 			p.setState(Stopped)
 			return
 		}
@@ -462,7 +510,7 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 	p.setState(Playing)
 	if err := p.audioDev.start(); err != nil {
 		p.logger.Error("audio: start failed", "err", err)
-		p.sendMsg(ErrorMsg{Err: fmt.Errorf("audio start: %w", err)})
+		p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("audio start: %w", err)})
 		p.setState(Stopped)
 		return
 	}
@@ -495,18 +543,24 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 		decodeTime := time.Since(t0)
 
 		if err != nil {
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if errors.Is(err, io.ErrUnexpectedEOF) && !dec.isComplete() {
+					// Genuine truncation — samples missing. Still play what we got.
+					p.logger.Warn("decoder: unexpected EOF before all samples decoded",
+						"decoded", dec.samples, "expected", dec.totalSamples(),
+						"index", index)
+				}
 				p.logger.Debug("decoder: track complete", "index", index,
 					"frames", frames,
 					"underruns", p.audioDev.ring.Underruns())
 				for p.audioDev.ring.Available() > 0 {
 					time.Sleep(10 * time.Millisecond)
 				}
-				p.sendMsg(TrackEndMsg{})
+				p.sendMsgBlocking(ctx, TrackEndMsg{})
 				return
 			}
 			p.logger.Error("decoder: frame error", "err", err)
-			p.sendMsg(ErrorMsg{Err: fmt.Errorf("FLAC decode: %w", err)})
+			p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("FLAC decode: %w", err)})
 			p.setState(Stopped)
 			return
 		}

@@ -20,10 +20,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rkujawa/uiscsi"
-	tape "github.com/rkujawa/uiscsi-tape"
-	"github.com/rkujawa/tapeplayer/player"
-	"github.com/rkujawa/tapeplayer/ui"
+	"github.com/uiscsi/uiscsi"
+	tape "github.com/uiscsi/uiscsi-tape"
+	"github.com/uiscsi/tapeplayer/player"
+	"github.com/uiscsi/tapeplayer/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -117,7 +117,9 @@ func main() {
 		// Ctrl+C, but Close needs to send MODE SELECT to restore the drive.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		drive.Close(cleanupCtx)
+		if err := drive.Close(cleanupCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: drive close: %v\n", err)
+		}
 	}()
 
 	// Enable hardware decompression if requested (default: yes).

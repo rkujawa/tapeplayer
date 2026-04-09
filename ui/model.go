@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rkujawa/tapeplayer/player"
+	"github.com/uiscsi/tapeplayer/player"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

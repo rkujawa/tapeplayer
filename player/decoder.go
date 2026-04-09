@@ -136,6 +136,17 @@ func (d *flacDecoder) nextFrame() ([]byte, error) {
 	return out, nil
 }
 
+// isComplete reports whether all expected samples have been decoded.
+// Returns true if NSamples is 0 (unknown) or all samples were decoded.
+func (d *flacDecoder) isComplete() bool {
+	return d.stream.Info.NSamples == 0 || d.samples >= d.stream.Info.NSamples
+}
+
+// totalSamples returns the expected total from STREAMINFO (0 if unknown).
+func (d *flacDecoder) totalSamples() uint64 {
+	return d.stream.Info.NSamples
+}
+
 // position returns the current playback position based on decoded samples.
 func (d *flacDecoder) position() time.Duration {
 	if d.stream.Info.SampleRate == 0 {
