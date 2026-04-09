@@ -11,8 +11,8 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/gen2brain/malgo v0.11.24
 	github.com/mewkiz/flac v1.0.13
-	github.com/rkujawa/uiscsi v1.2.0
-	github.com/rkujawa/uiscsi-tape v0.2.0
+	github.com/rkujawa/uiscsi v1.3.0
+	github.com/rkujawa/uiscsi-tape v0.3.0
 )
 
 require (
