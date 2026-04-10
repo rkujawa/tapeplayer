@@ -29,8 +29,22 @@ var (
 	valueStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("255"))
 
-	tapeStatusStyle = lipgloss.NewStyle().
+	// dimStyle replaces tapeStatusStyle — used for tape status, playlist
+	// suffixes, scroll indicators, and the EOT/more footer.
+	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	// currentTrackStyle highlights the currently playing playlist entry.
+	currentTrackStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("255"))
+
+	// trackStyle for non-current playlist entries.
+	trackStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245"))
+
+	// separatorStyle for horizontal rules.
+	separatorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("236"))
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))

@@ -108,6 +108,11 @@ func newTapeController(drive *tape.Drive, logger *slog.Logger, readBuf int) *tap
 // run is the controller's main loop. Call from a dedicated goroutine.
 func (tc *tapeController) run(ctx context.Context) {
 	defer close(tc.resultCh)
+	defer func() {
+		if tc.statusCh != nil {
+			close(tc.statusCh)
+		}
+	}()
 
 	for {
 		switch tc.state {

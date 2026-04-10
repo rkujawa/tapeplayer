@@ -30,16 +30,17 @@ type Player struct {
 	msgCh    chan tea.Msg     // buffered UI message channel (single drainer)
 	tc       *tapeController // exclusive owner of the tape drive
 
-	mu          sync.Mutex
-	wg          sync.WaitGroup
-	state       State
-	trackCancel context.CancelFunc // cancels decoder/audio only, not tape
-	audioDev    *audioDevice
-	streamBuf   *streamBuffer
-	decoder     *flacDecoder
-	startTime   time.Time
+	mu           sync.Mutex
+	wg           sync.WaitGroup
+	bgWg         sync.WaitGroup // tracks background drainer goroutines
+	state        State
+	trackCancel  context.CancelFunc // cancels decoder/audio only, not tape
+	audioDev     *audioDevice
+	streamBuf    *streamBuffer
+	decoder      *flacDecoder
+	startTime    time.Time
 	lastProgress time.Time // throttle PlaybackProgressMsg
-	closeOnce   sync.Once
+	closeOnce    sync.Once
 }
 
 // New creates a Player. readBufSize sets the tape read buffer (0 = 256KB).
@@ -68,13 +69,19 @@ func (p *Player) SetProgram(prog *tea.Program) {
 	}()
 	// Wire tape status messages to the UI.
 	p.tc.statusCh = make(chan TapeStatusMsg, 4)
+	p.bgWg.Add(1)
 	go func() {
+		defer p.bgWg.Done()
 		for msg := range p.tc.statusCh {
 			p.sendMsg(msg)
 		}
 	}()
 	go p.tc.run(context.Background())
-	go p.handleTapeResults()
+	p.bgWg.Add(1)
+	go func() {
+		defer p.bgWg.Done()
+		p.handleTapeResults()
+	}()
 }
 
 // Playlist returns the playlist for UI queries.
@@ -291,6 +298,9 @@ func (p *Player) Close() {
 		p.audioDev = nil
 	}
 	p.tc.cmdCh <- tapeCmdMsg{cmd: tapeCmdClose}
+	// Wait for tape controller drainers (statusCh, handleTapeResults) to
+	// exit before closing msgCh — they may still be sending.
+	p.bgWg.Wait()
 	p.closeOnce.Do(func() { close(p.msgCh) })
 }
 
@@ -477,6 +487,11 @@ func (p *Player) handleTapeResults() {
 
 		case tapeResultEOT:
 			p.playlist.MarkEOT()
+			// Reset current to last valid track — Forward() speculatively
+			// set current to the EOT index before the read completed.
+			if last := p.playlist.Len() - 1; last >= 0 {
+				p.playlist.SetCurrent(last)
+			}
 			p.sendPlaylistUpdate()
 			p.sendMsgBlocking(context.Background(), EOTMsg{})
 
@@ -576,6 +591,20 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 						"index", index)
 				}
 				p.logger.Debug("decoder: track complete", "index", index,
+					"frames", frames,
+					"underruns", p.audioDev.ring.Underruns())
+				for p.audioDev.ring.Available() > 0 {
+					time.Sleep(10 * time.Millisecond)
+				}
+				p.sendMsgBlocking(ctx, TrackEndMsg{})
+				return
+			}
+			// Tape uses fixed-size blocks; the last block of a FLAC file
+			// contains padding bytes past the actual stream data. If all
+			// expected samples have been decoded, treat any frame parse
+			// error (e.g., invalid sync-code) as normal end-of-track.
+			if dec.isComplete() {
+				p.logger.Debug("decoder: track complete (trailing data after last frame)", "index", index,
 					"frames", frames,
 					"underruns", p.audioDev.ring.Underruns())
 				for p.audioDev.ring.Available() > 0 {

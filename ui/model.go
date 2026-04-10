@@ -9,6 +9,7 @@ import (
 	"github.com/uiscsi/tapeplayer/player"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Model is the bubbletea model for the tapeplayer TUI.
@@ -27,6 +28,8 @@ type Model struct {
 	playlist        []player.PlaylistEntry
 	playlistCurrent int
 	playlistEOT     bool
+	width           int
+	height          int
 }
 
 // New creates the TUI model.
@@ -37,6 +40,8 @@ func New(p PlayerAPI, ctx context.Context, driveInfo string) Model {
 		state:           player.Stopped,
 		driveInfo:       driveInfo,
 		playlistCurrent: -1,
+		width:           80,
+		height:          24,
 	}
 }
 
@@ -54,6 +59,11 @@ func tick() tea.Cmd {
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -133,25 +143,46 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// innerWidth returns the usable content width inside the border.
+// Border takes 2 chars (left+right) + padding 2 chars (1 each side).
+func (m Model) innerWidth() int {
+	w := m.width - 4
+	if w < 76 {
+		w = 76
+	}
+	return w
+}
+
 // View renders the TUI.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
 
+	inner := m.innerWidth()
 	var b strings.Builder
 
-	// Title.
-	header := titleStyle.Render("tapeplayer") + "  " + tapeStatusStyle.Render(m.driveInfo)
+	// Header: title + drive info + audio device.
+	header := titleStyle.Render("tapeplayer") + "  " + dimStyle.Render(m.driveInfo)
 	if m.audioDevice != "" {
-		header += "  " + tapeStatusStyle.Render("▸ "+m.audioDevice)
+		header += "  " + dimStyle.Render("▸ "+m.audioDevice)
 	}
-	b.WriteString(header + "\n\n")
+	b.WriteString(header + "\n")
+	b.WriteString(separatorStyle.Render(strings.Repeat("─", inner)) + "\n")
 
 	// State + time.
 	stateIcon, stateStr := m.renderState()
 	timeStr := fmt.Sprintf("[%s/%s]", formatDuration(m.position), formatDuration(m.duration))
-	b.WriteString(fmt.Sprintf("  %s %s %34s\n\n", stateIcon, stateStr, timeStr))
+	statePart := fmt.Sprintf("  %s %s", stateIcon, stateStr)
+	gap := inner - lipgloss.Width(statePart) - lipgloss.Width(timeStr) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(statePart + strings.Repeat(" ", gap) + timeStr + "\n")
+
+	// Tape status (below state line).
+	tapeStr := m.renderTapeStatus()
+	b.WriteString("  " + dimStyle.Render(tapeStr) + "\n\n")
 
 	// Track metadata.
 	if m.track.Artist != "" {
@@ -161,7 +192,7 @@ func (m Model) View() string {
 		b.WriteString(fmt.Sprintf("  %s  %s\n", labelStyle.Render("Album:"), valueStyle.Render(m.track.Album)))
 	}
 	if m.track.Title != "" {
-		b.WriteString(fmt.Sprintf("  %s  %s\n", labelStyle.Render("Track:"), valueStyle.Render(m.track.Title)))
+		b.WriteString(fmt.Sprintf("  %s  %s\n", labelStyle.Render("Title:"), valueStyle.Render(m.track.Title)))
 	}
 	if m.track.SampleRate > 0 {
 		b.WriteString(fmt.Sprintf("  %s %s\n",
@@ -171,33 +202,43 @@ func (m Model) View() string {
 	}
 	b.WriteString("\n")
 
-	// Progress bar.
-	b.WriteString("  " + m.renderProgress(40) + "\n\n")
+	// Progress bar — scale to available width.
+	progWidth := inner - 8
+	if progWidth < 20 {
+		progWidth = 20
+	}
+	b.WriteString("  " + m.renderProgress(progWidth) + "\n\n")
 
-	// Playlist.
+	// Playlist (scrollable).
 	if len(m.playlist) > 0 {
-		b.WriteString(m.renderPlaylist())
-		b.WriteString("\n")
-	}
+		// Calculate fixed lines used by non-playlist content.
+		// header(1) + separator(1) + state(1) + tape(1) + blank(1) +
+		// blank after metadata(1) + progress(1) + blank(1) +
+		// blank after playlist(1) + help(1) + border(2) = 12
+		fixedLines := 12
+		if m.track.Artist != "" {
+			fixedLines++
+		}
+		if m.track.Album != "" {
+			fixedLines++
+		}
+		if m.track.Title != "" {
+			fixedLines++
+		}
+		if m.track.SampleRate > 0 {
+			fixedLines++
+		}
+		if m.lastErr != "" {
+			fixedLines += 2
+		}
 
-	// Tape status.
-	tapeStr := ""
-	if m.tape.Seeking {
-		tapeStr = "Tape: seeking to next track..."
-	} else if m.tape.BytesRead > 0 {
-		tapeStr = fmt.Sprintf("Tape: %.1f MB", float64(m.tape.BytesRead)/1e6)
-		if !m.tape.Complete {
-			tapeStr += " loading..."
+		maxPlaylistLines := m.height - fixedLines
+		if maxPlaylistLines < 3 {
+			maxPlaylistLines = 3
 		}
-		if m.tape.CurrentRate > 0 {
-			tapeStr += fmt.Sprintf(" | %.1f MB/s", m.tape.CurrentRate)
-		}
-		if m.tape.ReadRate > 0 {
-			tapeStr += fmt.Sprintf(" (avg %.1f MB/s)", m.tape.ReadRate)
-		}
-	}
-	if tapeStr != "" {
-		b.WriteString("  " + tapeStatusStyle.Render(tapeStr) + "\n\n")
+
+		b.WriteString(m.renderPlaylist(maxPlaylistLines))
+		b.WriteString("\n")
 	}
 
 	// Error.
@@ -208,15 +249,71 @@ func (m Model) View() string {
 	// Help.
 	b.WriteString("  " + helpStyle.Render("[space] play/pause  [f] next  [b] prev  [s] stop  [r] rewind  [q] quit") + "\n")
 
-	return borderStyle.Render(b.String())
+	content := b.String()
+	style := borderStyle.Width(m.width - 2).Height(m.height - 2)
+	return style.Render(content)
 }
 
-func (m Model) renderPlaylist() string {
-	var b strings.Builder
-	for _, e := range m.playlist {
-		prefix := "  "
-		suffix := ""
+func (m Model) renderTapeStatus() string {
+	if m.tape.Seeking {
+		return "Tape: seeking to next track..."
+	}
+	if !m.tape.Complete && m.tape.BytesRead > 0 {
+		s := fmt.Sprintf("Tape: %.1f MB loading...", float64(m.tape.BytesRead)/1e6)
+		if m.tape.CurrentRate > 0 {
+			s += fmt.Sprintf(" | %.1f MB/s", m.tape.CurrentRate)
+		}
+		if m.tape.ReadRate > 0 {
+			s += fmt.Sprintf(" (avg %.1f MB/s)", m.tape.ReadRate)
+		}
+		return s
+	}
+	return "Tape: idle"
+}
 
+func (m Model) renderPlaylist(maxLines int) string {
+	totalEntries := len(m.playlist)
+	footerLine := 1 // "-- end of tape --" or "-- more on tape --"
+	totalLines := totalEntries + footerLine
+
+	visibleEntries := maxLines - footerLine
+	if visibleEntries > totalEntries {
+		visibleEntries = totalEntries
+	}
+	if visibleEntries < 1 {
+		visibleEntries = 1
+	}
+
+	startIdx := 0
+	needScroll := visibleEntries < totalEntries
+	if needScroll {
+		// Center the current track in the visible window.
+		cur := m.playlistCurrent
+		if cur < 0 {
+			cur = 0
+		}
+		// Reserve lines for scroll indicators.
+		startIdx = cur - visibleEntries/2
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if startIdx+visibleEntries > totalEntries {
+			startIdx = totalEntries - visibleEntries
+		}
+	}
+	_ = totalLines
+
+	var b strings.Builder
+	endIdx := startIdx + visibleEntries
+
+	if needScroll && startIdx > 0 {
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("    ↑ %d more", startIdx)) + "\n")
+		startIdx++
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		e := m.playlist[i]
+		prefix := "  "
 		if e.Index == m.playlistCurrent {
 			prefix = " ▶"
 		}
@@ -226,26 +323,32 @@ func (m Model) renderPlaylist() string {
 			title = fmt.Sprintf("Track %d", e.Index+1)
 		}
 
+		var suffix string
 		switch {
 		case e.Cached:
-			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, cached]", float64(e.Size)/1e6))
+			suffix = dimStyle.Render(fmt.Sprintf(" [%.1f MB, cached]", float64(e.Size)/1e6))
 		case e.Partial:
-			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, partial]", float64(e.Size)/1e6))
+			suffix = dimStyle.Render(fmt.Sprintf(" [%.1f MB, partial]", float64(e.Size)/1e6))
 		default:
-			suffix = tapeStatusStyle.Render(fmt.Sprintf(" [%.1f MB, on tape]", float64(e.Size)/1e6))
+			suffix = dimStyle.Render(fmt.Sprintf(" [%.1f MB, on tape]", float64(e.Size)/1e6))
 		}
 
 		line := fmt.Sprintf("%s %d. %s%s", prefix, e.Index+1, title, suffix)
 		if e.Index == m.playlistCurrent {
-			b.WriteString("  " + valueStyle.Render(line) + "\n")
+			b.WriteString("  " + currentTrackStyle.Render(line) + "\n")
 		} else {
-			b.WriteString("  " + labelStyle.Render(line) + "\n")
+			b.WriteString("  " + trackStyle.Render(line) + "\n")
 		}
 	}
+
+	if needScroll && endIdx < totalEntries {
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("    ↓ %d more", totalEntries-endIdx)) + "\n")
+	}
+
 	if m.playlistEOT {
-		b.WriteString("  " + tapeStatusStyle.Render("  -- end of tape --") + "\n")
+		b.WriteString("  " + dimStyle.Render("  ── end of tape ──") + "\n")
 	} else if len(m.playlist) > 0 {
-		b.WriteString("  " + tapeStatusStyle.Render("  -- more on tape --") + "\n")
+		b.WriteString("  " + dimStyle.Render("  ── more on tape ──") + "\n")
 	}
 	return b.String()
 }
