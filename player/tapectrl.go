@@ -60,11 +60,18 @@ const (
 
 var errStopped = errors.New("tape: stopped by user")
 
+// driveOps is the subset of tape.Drive methods used by tapeController.
+// Abstracting this enables unit testing without a real iSCSI session.
+type driveOps interface {
+	Read(ctx context.Context, buf []byte) (int, error)
+	Rewind(ctx context.Context) error
+}
+
 // tapeController is the single goroutine that owns the tape drive.
 // All drive operations go through it — no other goroutine may call
 // drive.Read or drive.Rewind.
 type tapeController struct {
-	drive   *tape.Drive
+	drive   driveOps
 	logger  *slog.Logger
 	readBuf int
 
@@ -91,7 +98,7 @@ type tapeController struct {
 	lastCurRate float64 // most recent 1-second rate (reused between windows)
 }
 
-func newTapeController(drive *tape.Drive, logger *slog.Logger, readBuf int) *tapeController {
+func newTapeController(drive driveOps, logger *slog.Logger, readBuf int) *tapeController {
 	if readBuf <= 0 {
 		readBuf = 262144
 	}
