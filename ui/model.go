@@ -323,14 +323,19 @@ func (m Model) renderPlaylist(maxLines int) string {
 		if cur < 0 {
 			cur = 0
 		}
-		// Reserve lines for scroll indicators.
-		startIdx = cur - visibleEntries/2
+		// Reserve 2 lines for up/down scroll indicators (worst case both visible).
+		displayEntries := visibleEntries - 2
+		if displayEntries < 1 {
+			displayEntries = 1
+		}
+		startIdx = cur - displayEntries/2
 		if startIdx < 0 {
 			startIdx = 0
 		}
-		if startIdx+visibleEntries > totalEntries {
-			startIdx = totalEntries - visibleEntries
+		if startIdx+displayEntries > totalEntries {
+			startIdx = totalEntries - displayEntries
 		}
+		visibleEntries = displayEntries
 	}
 	_ = totalLines
 
@@ -339,7 +344,6 @@ func (m Model) renderPlaylist(maxLines int) string {
 
 	if needScroll && startIdx > 0 {
 		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("    ↑ %d more", startIdx)) + "\n")
-		startIdx++
 	}
 
 	for i := startIdx; i < endIdx; i++ {
