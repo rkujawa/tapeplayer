@@ -6,9 +6,14 @@ import "time"
 type State int
 
 const (
+	// Stopped indicates no playback is in progress and the player is idle.
 	Stopped State = iota
+	// Loading indicates the player is reading a track from tape or waiting
+	// for the first bytes before decoding can start.
 	Loading
+	// Playing indicates audio is actively being decoded and output.
 	Playing
+	// Paused indicates playback is suspended; resume with Play or TogglePlayPause.
 	Paused
 )
 
