@@ -14,6 +14,10 @@ Built on [uiscsi](https://github.com/uiscsi/uiscsi) and [uiscsi-tape](https://gi
 - **LRU data cache** -- caches discovered tracks in memory (500MB default) for instant replay; metadata preserved even after eviction
 - **FLAC metadata** -- displays artist, album, title, format from Vorbis comments
 - **Variable and fixed block modes** -- works with any tape block size via `-bs`
+- **Robust error handling** -- audio device errors, tape read errors, and FLAC decode errors are surfaced in the TUI with retry and skip options rather than crashing
+- **Graceful shutdown** -- quit, Ctrl+C, double Ctrl+C force-quit, and audio device loss all cleanly close the tape drive and release resources before exit
+- **streamBuffer lazy growth** -- memory is allocated as tape data arrives, not pre-allocated; a 50MB file on a DDS-4 drive uses only the memory read so far
+- **Debug logging** -- `-debug` flag writes structured slog output to a file for diagnostics without polluting the TUI
 
 ## Tape Format
 
@@ -97,13 +101,15 @@ Tape Reader ──▶ streamBuffer ──┤──▶ FLAC Decoder ──▶ Rin
 
 - **Playlist**: central data structure tracking all discovered tape files. Each entry holds FLAC metadata (artist, title, duration, size) and optionally cached data. LRU eviction keeps memory under the configured limit (500MB default). The currently playing track is never evicted. Metadata survives eviction, so the playlist always shows the full track list.
 
-- **streamBuffer**: growable buffer with blocking `io.Reader`. Tape fills it in background while the FLAC decoder reads from it concurrently. Enables playback to start before the full file is buffered -- critical for DDS drives (~6 MB/s) where a 50MB file takes ~8 seconds to buffer.
+- **streamBuffer**: growable buffer with blocking `io.Reader`. Memory is allocated on demand as tape data arrives -- there is no pre-allocation. Tape fills it in the background while the FLAC decoder reads from it concurrently. Enables playback to start before the full file is buffered -- critical for DDS drives (~6 MB/s) where a 50MB file takes ~8 seconds to buffer.
 
 - **ringBuffer**: fixed-size PCM sample buffer between the FLAC decoder and the audio callback. Uses `sync.Cond` (no spin-waiting). The audio callback never blocks -- it fills silence on underrun.
 
-- **Navigation**: Forward/Back operate on the playlist index, not the tape head position. Cache hits are instant. If a track's data was evicted, the player rewinds the tape and re-reads (expensive, logged as warning).
+- **Error recovery**: tape read errors, FLAC decode errors, and audio device errors are caught and delivered to the TUI as structured messages. The user is presented with retry and skip options. The player does not crash or silently skip on errors.
 
-- **WaitGroup**: tracks background goroutines (tape reader, FLAC decoder). `Stop()` waits for clean exit before starting the next track.
+- **Clean shutdown**: a WaitGroup tracks all background goroutines (tape reader, FLAC decoder). Every exit path -- normal quit, Ctrl+C, double Ctrl+C force-quit, and audio device loss -- waits for goroutines to finish and closes the tape drive before the process exits. No goroutine or file descriptor leaks.
+
+- **Navigation**: Forward/Back operate on the playlist index, not the tape head position. Cache hits are instant. If a track's data was evicted, the player rewinds the tape and re-reads (expensive, logged as warning).
 
 ## Dependencies
 
