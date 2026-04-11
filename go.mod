@@ -9,6 +9,7 @@ require (
 	github.com/mewkiz/flac v1.0.13
 	github.com/uiscsi/uiscsi v1.3.1
 	github.com/uiscsi/uiscsi-tape v0.3.2
+	go.uber.org/goleak v1.3.0
 )
 
 require (
