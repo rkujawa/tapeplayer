@@ -127,3 +127,4 @@ Tape Reader ──▶ streamBuffer ──┤──▶ FLAC Decoder ──▶ Rin
 - Go 1.25 or later
 - CGo (required by malgo for system audio)
 - iSCSI-attached tape drive with loaded media
+- Tests require [goleak](https://github.com/uber-go/goleak) for goroutine leak detection (test-only)
