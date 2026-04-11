@@ -50,7 +50,7 @@ func newAudioDevice(sampleRate uint32, channels uint8, bitsPerSample uint8, logg
 
 	// Query the default playback device name.
 	devName := "Unknown"
-	if devs, err := ctx.Devices(malgo.Playback); err == nil {
+	if devs, devErr := ctx.Devices(malgo.Playback); devErr == nil {
 		for _, d := range devs {
 			if d.IsDefault != 0 {
 				devName = d.Name()
@@ -71,7 +71,7 @@ func newAudioDevice(sampleRate uint32, channels uint8, bitsPerSample uint8, logg
 	}
 
 	callbacks := malgo.DeviceCallbacks{
-		Data: func(pOutput, pInput []byte, framecount uint32) {
+		Data: func(pOutput, _ []byte, framecount uint32) {
 			bytesNeeded := int(framecount) * int(channels) * int(bytesPerSample)
 			if bytesNeeded > len(pOutput) {
 				bytesNeeded = len(pOutput)
@@ -99,7 +99,7 @@ func (ad *audioDevice) start() error {
 // any writer (decoder goroutine) spinning on a full buffer.
 func (ad *audioDevice) stop() {
 	ad.ring.Close()
-	ad.device.Stop()
+	_ = ad.device.Stop()
 }
 
 // reset prepares the ring buffer for a new track.
@@ -109,12 +109,12 @@ func (ad *audioDevice) reset() {
 
 // pause halts audio playback without clearing the buffer.
 func (ad *audioDevice) pause() {
-	ad.device.Stop()
+	_ = ad.device.Stop()
 }
 
 // resume restarts audio playback.
 func (ad *audioDevice) resume() {
-	ad.device.Start()
+	_ = ad.device.Start()
 }
 
 // ringSize returns the ring buffer total capacity.
@@ -145,6 +145,8 @@ func (ad *audioDevice) audioInfo() AudioDeviceInfo {
 		format = "S32LE"
 	case malgo.FormatF32:
 		format = "F32LE"
+	default:
+		// FormatUnknown or any future format: leave as "unknown"
 	}
 	return AudioDeviceInfo{
 		DeviceName: ad.deviceName,

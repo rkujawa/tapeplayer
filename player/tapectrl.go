@@ -251,7 +251,7 @@ func (tc *tapeController) readOneChunk(ctx context.Context) {
 	}
 
 	if n > 0 {
-		tc.currentSB.Write(tc.buf[:n])
+		_, _ = tc.currentSB.Write(tc.buf[:n])
 		tc.bytesRead += int64(n)
 
 		if tc.statusCh != nil && time.Since(tc.lastStatusTime) >= 200*time.Millisecond {

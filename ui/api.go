@@ -1,3 +1,4 @@
+// Package ui provides the bubbletea TUI model for tapeplayer.
 package ui
 
 import (

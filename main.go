@@ -29,6 +29,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	portal := flag.String("portal", "", "iSCSI target portal address (host:port)")
 	target := flag.String("target", "", "target IQN")
 	lun := flag.Uint64("lun", 0, "LUN number")
@@ -47,7 +51,7 @@ func main() {
 	if *portal == "" || *target == "" {
 		fmt.Fprintf(os.Stderr, "error: -portal and -target are required\n\n")
 		flag.Usage()
-		os.Exit(1)
+		return 1
 	}
 
 	// Logger: debug to file if specified, otherwise discard.
@@ -60,9 +64,9 @@ func main() {
 		f, err := os.Create(*debugFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: open debug log: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		logger = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		sessLogger = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
@@ -94,9 +98,9 @@ func main() {
 	sess, err := uiscsi.Dial(ctx, *portal, opts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: dial %s: %v\n", *portal, err)
-		os.Exit(2)
+		return 2
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	// Open tape drive.
 	var tapeOpts []tape.Option
@@ -110,34 +114,34 @@ func main() {
 	drive, err := tape.Open(ctx, sess, *lun, tapeOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: open tape LUN %d: %v\n", *lun, err)
-		os.Exit(2)
+		return 2
 	}
 	defer func() {
 		// Use a fresh context — the signal handler cancels ctx on first
 		// Ctrl+C, but Close needs to send MODE SELECT to restore the drive.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		if err := drive.Close(cleanupCtx); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: drive close: %v\n", err)
+		if closeErr := drive.Close(cleanupCtx); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: drive close: %v\n", closeErr)
 		}
 	}()
 
 	// Enable hardware decompression if requested (default: yes).
 	if *decompress {
-		if err := drive.SetCompression(ctx, true, true); err != nil {
+		if compErr := drive.SetCompression(ctx, true, true); compErr != nil {
 			// Not fatal — drive may not support compression page.
-			logger.Warn("compression: could not enable", "err", err)
+			logger.Warn("compression: could not enable", "err", compErr)
 		}
 	}
 
 	// Rewind to BOT so file numbering is correct.
-	if err := drive.Rewind(ctx); err != nil {
+	if err = drive.Rewind(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "error: rewind: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 
 	driveInfo := fmt.Sprintf("%s %s", drive.Info().VendorID, drive.Info().ProductID)
-	if code, err := drive.DensityCode(ctx); err == nil && code != 0 {
+	if code, codeErr := drive.DensityCode(ctx); codeErr == nil && code != 0 {
 		driveInfo += fmt.Sprintf(" [%s]", tape.DensityName(code))
 	}
 
@@ -159,8 +163,9 @@ func main() {
 	p.SetProgram(prog)
 
 	// Run TUI (blocks until quit).
-	if _, err := prog.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	if _, runErr := prog.Run(); runErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", runErr)
+		return 1
 	}
+	return 0
 }

@@ -148,6 +148,8 @@ func (p *Player) Play(ctx context.Context) {
 		}
 	case Paused:
 		p.resume()
+	default:
+		// Loading or Playing: no action
 	}
 }
 
@@ -172,6 +174,8 @@ func (p *Player) TogglePlayPause(ctx context.Context) {
 		p.resume()
 	case Stopped:
 		p.Play(ctx)
+	default:
+		// Loading: no action while loading
 	}
 }
 
@@ -237,10 +241,11 @@ func (p *Player) Back(ctx context.Context) {
 	if cur < 0 {
 		return // no track has been played yet
 	}
-	if p.playlist.IsCached(cur) {
+	switch {
+	case p.playlist.IsCached(cur):
 		go func() { p.tc.cmdCh <- tapeCmdMsg{cmd: tapeCmdStop} }()
 		p.playFromCache(ctx, cur)
-	} else if cur == p.playlist.Current() && liveSB != nil && liveSB.Len() > 0 {
+	case cur == p.playlist.Current() && liveSB != nil && liveSB.Len() > 0:
 		// Restarting current track while tape is still loading. The
 		// streamBuffer has all data from the beginning — reset its
 		// read position and start a new decoder. The tape controller
@@ -265,7 +270,7 @@ func (p *Player) Back(ctx context.Context) {
 			defer p.wg.Done()
 			p.startDecoder(trackCtx, liveSB, cur)
 		}()
-	} else {
+	default:
 		// Track was evicted — need to rewind and re-read.
 		go p.rewindAndPlay(ctx, cur)
 	}
@@ -273,7 +278,7 @@ func (p *Player) Back(ctx context.Context) {
 
 // RewindTape rewinds the tape to BOT. Does NOT clear the playlist —
 // cached data and metadata are preserved.
-func (p *Player) RewindTape(ctx context.Context) {
+func (p *Player) RewindTape(_ context.Context) {
 	p.stopDecoder()
 	go func() {
 		p.tc.cmdCh <- tapeCmdMsg{cmd: tapeCmdStop}

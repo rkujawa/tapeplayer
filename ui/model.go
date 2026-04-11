@@ -46,12 +46,12 @@ func New(p PlayerAPI, ctx context.Context, driveInfo string) Model {
 }
 
 // Init returns the initial command (periodic tick).
-func (m Model) Init() tea.Cmd {
+func (Model) Init() tea.Cmd {
 	return tick()
 }
 
 func tick() tea.Cmd {
-	return tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(250*time.Millisecond, func(_ time.Time) tea.Msg {
 		return player.TickMsg{}
 	})
 }
@@ -186,19 +186,19 @@ func (m Model) View() string {
 
 	// Track metadata.
 	if m.track.Artist != "" {
-		b.WriteString(fmt.Sprintf("  %s %s\n", labelStyle.Render("Artist:"), valueStyle.Render(m.track.Artist)))
+		fmt.Fprintf(&b, "  %s %s\n", labelStyle.Render("Artist:"), valueStyle.Render(m.track.Artist))
 	}
 	if m.track.Album != "" {
-		b.WriteString(fmt.Sprintf("  %s  %s\n", labelStyle.Render("Album:"), valueStyle.Render(m.track.Album)))
+		fmt.Fprintf(&b, "  %s  %s\n", labelStyle.Render("Album:"), valueStyle.Render(m.track.Album))
 	}
 	if m.track.Title != "" {
-		b.WriteString(fmt.Sprintf("  %s  %s\n", labelStyle.Render("Title:"), valueStyle.Render(m.track.Title)))
+		fmt.Fprintf(&b, "  %s  %s\n", labelStyle.Render("Title:"), valueStyle.Render(m.track.Title))
 	}
 	if m.track.SampleRate > 0 {
-		b.WriteString(fmt.Sprintf("  %s %s\n",
+		fmt.Fprintf(&b, "  %s %s\n",
 			labelStyle.Render("Format:"),
 			valueStyle.Render(fmt.Sprintf("%d-bit %dHz %dch FLAC",
-				m.track.BitsPerSample, m.track.SampleRate, m.track.Channels))))
+				m.track.BitsPerSample, m.track.SampleRate, m.track.Channels)))
 	}
 	b.WriteString("\n")
 

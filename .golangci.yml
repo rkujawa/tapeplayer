@@ -24,14 +24,33 @@ linters:
       enable:
         - nilness
         - shadow
+    exhaustive:
+      default-signifies-exhaustive: true
     revive:
       rules:
         - name: indent-error-flow
         - name: unused-parameter
         - name: unused-receiver
 
-exclusions:
-  rules:
-    - path: (.+)_test\.go
-      linters:
-        - errcheck
+  exclusions:
+    rules:
+      - path: (_test\.go|test/)
+        linters:
+          - errcheck
+          - noctx
+          - unused
+      - path: (_test\.go|test/)
+        linters:
+          - govet
+        text: "shadow"
+      - path: (_test\.go|test/)
+        linters:
+          - revive
+        text: "(unused-receiver|unused-parameter)"
+      - path: (_test\.go|test/)
+        linters:
+          - exhaustive
+      - path: (_test\.go|test/)
+        linters:
+          - gocritic
+        text: "(elseif|singleCaseSwitch)"
