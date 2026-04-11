@@ -302,6 +302,8 @@ func (p *Player) Close() {
 	p.state = Stopped
 	p.mu.Unlock()
 
+	p.wg.Wait() // Wait for decoder goroutine to finish before touching audioDev
+
 	if p.audioDev != nil {
 		p.audioDev.stop()
 		p.audioDev.close()
