@@ -259,6 +259,35 @@ func TestStreamBufferBytesBeforeComplete(t *testing.T) {
 	}
 }
 
+func TestStreamBufferNoPolling(t *testing.T) {
+	sb := newStreamBuffer()
+
+	// Write 1 byte from another goroutine after a brief delay.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		sb.Write([]byte{0x42})
+	}()
+
+	// Read should wake up immediately when data arrives (via notify),
+	// not after a 10ms polling interval.
+	buf := make([]byte, 1)
+	start := time.Now()
+	n, err := sb.Read(buf)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if n != 1 || buf[0] != 0x42 {
+		t.Fatalf("got n=%d buf=%x, want n=1 buf=42", n, buf[0])
+	}
+	// The write happens after ~10ms. Read should return within ~15ms
+	// (10ms delay + near-instant wake). If polling at 10ms, it would
+	// add another 10ms on average. Allow up to 50ms for CI jitter.
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("Read took %v, expected near-instant wake after Write", elapsed)
+	}
+}
+
 func TestStreamBufferLen(t *testing.T) {
 	sb := newStreamBuffer()
 	if sb.Len() != 0 {

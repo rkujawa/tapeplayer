@@ -398,7 +398,7 @@ func (p *Player) playFromTape(ctx context.Context, index int) {
 			select {
 			case <-trackCtx.Done():
 				return
-			case <-time.After(5 * time.Millisecond):
+			case <-sb.notify:
 			}
 		}
 		if sb.Len() > 0 {
@@ -446,7 +446,7 @@ func (p *Player) rewindAndPlay(ctx context.Context, index int) {
 			select {
 			case <-trackCtx.Done():
 				return
-			case <-time.After(5 * time.Millisecond):
+			case <-sb.notify:
 			}
 		}
 		if sb.Len() > 0 {
