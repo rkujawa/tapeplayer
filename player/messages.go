@@ -86,6 +86,10 @@ type EOTMsg struct{}
 // ErrorMsg carries an error from a background goroutine.
 type ErrorMsg struct{ Err error }
 
+// AudioErrorMsg is sent when the audio device fails during init or playback.
+// The TUI can offer retry (re-init audio for current track) or skip (Forward).
+type AudioErrorMsg struct{ Err error }
+
 // PlaylistUpdateMsg carries the updated playlist for UI display.
 type PlaylistUpdateMsg struct {
 	Entries []PlaylistEntry

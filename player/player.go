@@ -41,6 +41,10 @@ type Player struct {
 	startTime    time.Time
 	lastProgress time.Time // throttle PlaybackProgressMsg
 	closeOnce    sync.Once
+
+	// newAudioFunc creates an audio device. Defaults to newAudioDevice.
+	// Tests override this to inject audio failures without C bindings.
+	newAudioFunc func(sampleRate uint32, channels uint8, bitsPerSample uint8, logger *slog.Logger) (*audioDevice, error)
 }
 
 // New creates a Player. readBufSize sets the tape read buffer (0 = 256KB).
@@ -50,11 +54,12 @@ func New(drive *tape.Drive, logger *slog.Logger, readBufSize int, cacheLimit int
 		readBufSize = 262144
 	}
 	return &Player{
-		logger:   logger,
-		playlist: NewPlaylist(cacheLimit),
-		msgCh:    make(chan tea.Msg, 64),
-		tc:       newTapeController(drive, logger, readBufSize),
-		state:    Stopped,
+		logger:       logger,
+		playlist:     NewPlaylist(cacheLimit),
+		msgCh:        make(chan tea.Msg, 64),
+		tc:           newTapeController(drive, logger, readBufSize),
+		state:        Stopped,
+		newAudioFunc: newAudioDevice,
 	}
 }
 
@@ -536,9 +541,9 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 
 	// Initialize audio device if needed.
 	if p.audioDev == nil {
-		ad, err := newAudioDevice(info.SampleRate, info.Channels, info.BitsPerSample, p.logger)
+		ad, err := p.newAudioFunc(info.SampleRate, info.Channels, info.BitsPerSample, p.logger)
 		if err != nil {
-			p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("audio init: %w", err)})
+			p.sendMsgBlocking(ctx, AudioErrorMsg{Err: fmt.Errorf("audio init: %w", err)})
 			p.setState(Stopped)
 			return
 		}
@@ -556,7 +561,9 @@ func (p *Player) startDecoder(ctx context.Context, sb *streamBuffer, index int) 
 	p.setState(Playing)
 	if err := p.audioDev.start(); err != nil {
 		p.logger.Error("audio: start failed", "err", err)
-		p.sendMsgBlocking(ctx, ErrorMsg{Err: fmt.Errorf("audio start: %w", err)})
+		p.audioDev.close() // Prevent malgo context leak (T-06-03).
+		p.audioDev = nil
+		p.sendMsgBlocking(ctx, AudioErrorMsg{Err: fmt.Errorf("audio start: %w", err)})
 		p.setState(Stopped)
 		return
 	}
