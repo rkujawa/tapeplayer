@@ -74,6 +74,9 @@ func (sb *streamBuffer) growIfNeeded(n int) {
 		return
 	}
 	newCap := cap(sb.data)
+	if newCap == 0 {
+		newCap = initialStreamBufCap
+	}
 	for newCap < needed {
 		if newCap < growthThreshold {
 			newCap *= 2
