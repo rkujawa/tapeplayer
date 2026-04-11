@@ -164,6 +164,101 @@ func TestStreamBufferBytesAfterComplete(t *testing.T) {
 	}
 }
 
+func TestStreamBufferLazyGrowth(t *testing.T) {
+	sb := newStreamBuffer()
+
+	// Initial capacity should be 4 MB.
+	if cap(sb.data) != 4*1024*1024 {
+		t.Fatalf("initial cap = %d, want %d", cap(sb.data), 4*1024*1024)
+	}
+
+	// Write 5 MB — capacity should double from 4 to 8 MB.
+	chunk := make([]byte, 5*1024*1024)
+	sb.Write(chunk)
+	c := cap(sb.data)
+	if c < 5*1024*1024 || c > 10*1024*1024 {
+		t.Fatalf("cap after 5 MB write = %d, want between 5 MB and 10 MB", c)
+	}
+
+	// Write up to 70 MB total — verify capacity grew past initial.
+	more := make([]byte, 65*1024*1024)
+	sb.Write(more)
+	if cap(sb.data) < 70*1024*1024 {
+		t.Fatalf("cap after 70 MB = %d, want >= 70 MB", cap(sb.data))
+	}
+	sb.Complete()
+}
+
+func TestStreamBufferGrowthPolicy(t *testing.T) {
+	sb := newStreamBuffer()
+
+	// Write exactly 64 MB. Doubling: 4->8->16->32->64 MB.
+	data := make([]byte, 64*1024*1024)
+	sb.Write(data)
+	c := cap(sb.data)
+	if c != 64*1024*1024 {
+		t.Fatalf("cap after 64 MB write = %d, want exactly 64 MB (%d)", c, 64*1024*1024)
+	}
+
+	// Write 1 more byte — should allocate 64+64 = 128 MB.
+	sb.Write([]byte{0x42})
+	c = cap(sb.data)
+	if c != 128*1024*1024 {
+		t.Fatalf("cap after 64 MB + 1 byte = %d, want 128 MB (%d)", c, 128*1024*1024)
+	}
+	sb.Complete()
+}
+
+func TestStreamBufferConcurrentBytes(t *testing.T) {
+	sb := newStreamBuffer()
+
+	var wg sync.WaitGroup
+
+	// Writer goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		chunk := bytes.Repeat([]byte("y"), 1024)
+		for range 1000 {
+			sb.Write(chunk)
+		}
+		sb.Complete()
+	}()
+
+	// 100 concurrent Bytes() readers.
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				data := sb.Bytes()
+				_ = len(data) // just access it
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+func TestStreamBufferBytesBeforeComplete(t *testing.T) {
+	sb := newStreamBuffer()
+	sb.Write([]byte("hello"))
+
+	// Bytes() should work even before Complete() — no panic.
+	got := sb.Bytes()
+	if string(got) != "hello" {
+		t.Fatalf("Bytes before complete: got %q, want %q", got, "hello")
+	}
+
+	sb.Complete()
+
+	// After complete too.
+	got = sb.Bytes()
+	if string(got) != "hello" {
+		t.Fatalf("Bytes after complete: got %q, want %q", got, "hello")
+	}
+}
+
 func TestStreamBufferLen(t *testing.T) {
 	sb := newStreamBuffer()
 	if sb.Len() != 0 {
