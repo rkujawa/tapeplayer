@@ -22,6 +22,8 @@ type Model struct {
 	position        time.Duration
 	duration        time.Duration
 	lastErr         string
+	audioErr        bool
+	audioErrMsg     string
 	quitting        bool
 	driveInfo       string
 	audioDevice     string
@@ -70,6 +72,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case player.StateChangedMsg:
 		m.state = msg.State
+		m.audioErr = false
+		m.audioErrMsg = ""
+		return m, nil
+
+	case player.AudioErrorMsg:
+		m.audioErr = true
+		m.audioErrMsg = msg.Err.Error()
+		m.lastErr = ""
 		return m, nil
 
 	case player.TrackInfoMsg:
@@ -118,6 +128,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Context-sensitive keys when an audio error is active.
+	if m.audioErr {
+		switch msg.String() {
+		case KeyRewind: // 'r' = retry current track when audio error active
+			m.audioErr = false
+			m.audioErrMsg = ""
+			m.player.Play(m.ctx)
+			return m, nil
+		case "n": // skip to next track
+			m.audioErr = false
+			m.audioErrMsg = ""
+			m.player.Forward(m.ctx)
+			return m, nil
+		}
+	}
+
 	switch msg.String() {
 	case KeyQuit, "ctrl+c":
 		m.quitting = true
@@ -228,7 +254,9 @@ func (m Model) View() string {
 		if m.track.SampleRate > 0 {
 			fixedLines++
 		}
-		if m.lastErr != "" {
+		if m.audioErr {
+			fixedLines += 3 // error line + hint line + blank
+		} else if m.lastErr != "" {
 			fixedLines += 2
 		}
 
@@ -242,7 +270,10 @@ func (m Model) View() string {
 	}
 
 	// Error.
-	if m.lastErr != "" {
+	if m.audioErr {
+		b.WriteString("  " + errorStyle.Render("Audio error: "+m.audioErrMsg) + "\n")
+		b.WriteString("  " + helpStyle.Render("[r] retry  [n] skip to next") + "\n\n")
+	} else if m.lastErr != "" {
 		b.WriteString("  " + errorStyle.Render(m.lastErr) + "\n\n")
 	}
 
