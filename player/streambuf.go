@@ -5,35 +5,32 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // streamBuffer accumulates tape data and provides a non-contending
 // io.Reader for the FLAC decoder.
 //
 // Design: the tape writer calls Write, which appends to an internal
-// slice under a mutex and updates an atomic write position. The FLAC
-// decoder calls Read, which reads up to the current atomic write
-// position WITHOUT taking the mutex — it just reads from the portion
-// of the slice that is already written and immutable.
+// slice under a write lock and updates an atomic write position. The FLAC
+// decoder calls Read, which snapshots the slice header under a read lock
+// then copies from the immutable portion of the backing array.
 //
-// This works because Go slice backing arrays are stable: once bytes
-// are written at positions 0..N, those bytes never move (append only
-// grows the slice, it doesn't modify existing bytes). The reader only
-// accesses positions 0..writePos, which are frozen.
+// Growth policy: starts at 4 MB, doubles until 64 MB, then grows in
+// fixed 64 MB chunks. No hard cap — single FLAC files on LTO tapes
+// can exceed 512 MB.
 //
-// The only contention is when append triggers a reallocation (copy to
-// new backing array). Pre-allocating 64MB makes this rare. When it
-// happens, the reader briefly sees stale data from the old backing
-// array — but since readPos < old writePos, those bytes are identical
-// in both arrays.
+// Concurrency: sync.RWMutex protects the slice header. Write holds
+// the exclusive lock; Read and Bytes hold the shared read lock. The
+// atomic writePos allows readers to check data availability without
+// any lock.
+
 // wrappedError is a consistent concrete type for atomic.Value storage.
 // atomic.Value panics if different concrete error types are stored;
 // wrapping in a struct avoids this.
 type wrappedError struct{ err error }
 
 type streamBuffer struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	data     []byte
 	writePos atomic.Int64 // bytes written so far (atomic, no lock for reader)
 	readPos  int
@@ -44,11 +41,11 @@ type streamBuffer struct {
 	notify chan struct{}
 }
 
-// Pre-allocate 512MB. This avoids reallocations during tape reading
-// (which hold the mutex and block the decoder). 512MB covers any
-// single FLAC file. The memory is virtual until touched — the OS
-// only allocates physical pages as data is written.
-const initialStreamBufCap = 512 * 1024 * 1024
+const (
+	initialStreamBufCap = 4 * 1024 * 1024  // 4 MB initial allocation
+	growthThreshold     = 64 * 1024 * 1024  // double until 64 MB
+	fixedGrowthChunk    = 64 * 1024 * 1024  // then 64 MB fixed chunks
+)
 
 // newStreamBufferFrom creates a pre-filled, completed streamBuffer.
 func newStreamBufferFrom(data []byte) *streamBuffer {
@@ -69,10 +66,31 @@ func newStreamBuffer() *streamBuffer {
 	}
 }
 
-// Write appends p to the buffer. Takes mutex briefly for append,
-// then updates atomic writePos and signals the reader.
+// growIfNeeded ensures the backing array can hold n more bytes.
+// Caller must hold the exclusive write lock.
+func (sb *streamBuffer) growIfNeeded(n int) {
+	needed := len(sb.data) + n
+	if needed <= cap(sb.data) {
+		return
+	}
+	newCap := cap(sb.data)
+	for newCap < needed {
+		if newCap < growthThreshold {
+			newCap *= 2
+		} else {
+			newCap += fixedGrowthChunk
+		}
+	}
+	newData := make([]byte, len(sb.data), newCap)
+	copy(newData, sb.data)
+	sb.data = newData
+}
+
+// Write appends p to the buffer. Takes the exclusive lock for append
+// and growth, then updates atomic writePos and signals the reader.
 func (sb *streamBuffer) Write(p []byte) (int, error) {
 	sb.mu.Lock()
+	sb.growIfNeeded(len(p))
 	sb.data = append(sb.data, p...)
 	newLen := int64(len(sb.data))
 	sb.mu.Unlock()
@@ -89,21 +107,18 @@ func (sb *streamBuffer) Write(p []byte) (int, error) {
 }
 
 // Read reads from the buffer up to the current write position.
-// Does NOT take the mutex — reads from the immutable portion of the
-// backing array (positions 0..writePos are frozen after write).
+// Takes a read lock to snapshot the slice header, then copies from
+// the immutable portion of the backing array.
 // Blocks only when the reader has caught up to the writer.
 func (sb *streamBuffer) Read(p []byte) (int, error) {
 	for {
 		wp := int(sb.writePos.Load())
 
 		if sb.readPos < wp {
-			// Data available — read without any lock.
-			// Safe because data[0..wp-1] is immutable (only append grows).
-			// We must read data slice header under lock in case append
-			// reallocated the backing array.
-			sb.mu.Lock()
+			// Data available — snapshot slice header under read lock.
+			sb.mu.RLock()
 			src := sb.data[sb.readPos:]
-			sb.mu.Unlock()
+			sb.mu.RUnlock()
 
 			n := copy(p, src)
 			sb.readPos += n
@@ -119,12 +134,7 @@ func (sb *streamBuffer) Read(p []byte) (int, error) {
 		}
 
 		// Wait for more data (or completion signal).
-		select {
-		case <-sb.notify:
-			// New data or completion — retry.
-		case <-time.After(10 * time.Millisecond):
-			// Periodic check in case we missed a signal.
-		}
+		<-sb.notify
 	}
 }
 
@@ -146,12 +156,11 @@ func (sb *streamBuffer) Abort(err error) {
 	}
 }
 
-// Bytes returns the full buffered contents for track replay.
-// Must only be called after Complete.
+// Bytes returns the buffered contents. Safe to call at any time,
+// including before Complete — returns whatever has been written so far.
 func (sb *streamBuffer) Bytes() []byte {
-	if !sb.complete.Load() {
-		panic("streamBuffer.Bytes() called before Complete()")
-	}
+	sb.mu.RLock()
+	defer sb.mu.RUnlock()
 	return sb.data
 }
 
