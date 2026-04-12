@@ -8,7 +8,7 @@ require (
 	github.com/gen2brain/malgo v0.11.24
 	github.com/mewkiz/flac v1.0.13
 	github.com/uiscsi/uiscsi v1.3.1
-	github.com/uiscsi/uiscsi-tape v0.3.2
+	github.com/uiscsi/uiscsi-tape v0.4.0
 	go.uber.org/goleak v1.3.0
 )
 
