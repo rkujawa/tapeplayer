@@ -7,8 +7,8 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/gen2brain/malgo v0.11.24
 	github.com/mewkiz/flac v1.0.13
-	github.com/uiscsi/uiscsi v1.4.0
-	github.com/uiscsi/uiscsi-tape v0.4.0
+	github.com/uiscsi/uiscsi v1.4.1
+	github.com/uiscsi/uiscsi-tape v0.4.2
 	go.uber.org/goleak v1.3.0
 )
 
