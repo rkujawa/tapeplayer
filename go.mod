@@ -5,7 +5,7 @@ go 1.25
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/gen2brain/malgo v0.11.24
+	github.com/gen2brain/malgo v0.11.25
 	github.com/mewkiz/flac v1.0.13
 	github.com/uiscsi/uiscsi v1.4.1
 	github.com/uiscsi/uiscsi-tape v0.4.3
